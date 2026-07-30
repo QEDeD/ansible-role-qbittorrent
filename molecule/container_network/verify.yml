@@ -84,6 +84,15 @@
           {{ qbittorrent_container_network_initial_contract.HostConfig }}
         qbittorrent_container_network_initial_mounts: >-
           {{ qbittorrent_container_network_initial_contract.Mounts }}
+        qbittorrent_container_network_initial_proxy_environment: >-
+          {{
+            qbittorrent_container_network_initial_contract.Config.Env
+            | select(
+              'match',
+              '^(?:HTTP_PROXY|HTTPS_PROXY|NO_PROXY|ALL_PROXY|FTP_PROXY|http_proxy|https_proxy|no_proxy|all_proxy|ftp_proxy)='
+            )
+            | list
+          }}
       ansible.builtin.assert:
         that:
           - >-
@@ -114,6 +123,21 @@
             | list
             | length
             == 0
+          - >-
+            qbittorrent_container_network_initial_proxy_environment | sort
+            ==
+            [
+              'ALL_PROXY=',
+              'FTP_PROXY=',
+              'HTTP_PROXY=',
+              'HTTPS_PROXY=',
+              'NO_PROXY=',
+              'all_proxy=',
+              'ftp_proxy=',
+              'http_proxy=',
+              'https_proxy=',
+              'no_proxy=',
+            ]
 
     - name: Stop the synthetic owner to exercise BindsTo
       ansible.builtin.systemd_service:

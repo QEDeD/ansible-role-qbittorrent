@@ -698,6 +698,35 @@
         [ "$candidate_role_label_value" = "$qbittorrent_role_label_value" ] || return 1
       }
 
+      qbittorrent_identity_has_neutral_proxy_environment() {
+        expected_qbittorrent_id=$1
+        proxy_environment=$(
+          "$docker_command" container inspect \
+            --format='{{ '{{' }}range .Config.Env{{ '}}' }}{{ '{{' }}println .{{ '}}' }}{{ '{{' }}end{{ '}}' }}' \
+            "$expected_qbittorrent_id"
+        ) || return 1
+
+        for proxy_name in \
+          HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY FTP_PROXY \
+          http_proxy https_proxy no_proxy all_proxy ftp_proxy
+        do
+          printf '%s\n' "$proxy_environment" |
+            /usr/bin/awk -v proxy_name="$proxy_name" '
+              index($0, proxy_name "=") == 1 {
+                matches++
+                if ($0 != proxy_name "=") {
+                  exit 2
+                }
+              }
+              END {
+                if (matches != 1) {
+                  exit 1
+                }
+              }
+            ' || return 1
+        done
+      }
+
       qbittorrent_identity_is_safe() {
         expected_qbittorrent_id=$1
         expected_owner_id=$2
@@ -725,6 +754,8 @@
         [ "$candidate_network_mode" = "container:$expected_owner_id" ] || return 1
         [ "$candidate_running" = false ] || return 1
         [ "$candidate_role_label_value" = "$qbittorrent_role_label_value" ] || return 1
+        qbittorrent_identity_has_neutral_proxy_environment \
+          "$expected_qbittorrent_id"
       }
 
       exact_qbittorrent_name_is_absent() {
@@ -884,6 +915,8 @@
       {% endif %}
       {% endfor %}
 
+      # Docker CLI proxy defaults are neutralized below so they cannot become
+      # a bridge-local egress path around the shared VPN namespace.
       qbit_id=
       if ! qbit_id=$(
         "$docker_command" create \
@@ -900,6 +933,16 @@
           --read-only \
           "--network=container:$owner_id" \
           "--env-file=$env_file" \
+          --env=HTTP_PROXY= \
+          --env=HTTPS_PROXY= \
+          --env=NO_PROXY= \
+          --env=ALL_PROXY= \
+          --env=FTP_PROXY= \
+          --env=http_proxy= \
+          --env=https_proxy= \
+          --env=no_proxy= \
+          --env=all_proxy= \
+          --env=ftp_proxy= \
           "--label-file=$labels_file" \
           "--mount=type=bind,src=$data_path,dst=/config" \
           "--mount=type=bind,src=$download_path,dst=$download_bind_path" \
