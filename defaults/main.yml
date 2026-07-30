@@ -4,6 +4,7 @@
 # SPDX-FileCopyrightText: 2025 MASH project contributors
 # SPDX-FileCopyrightText: 2025 spatterlight
 # SPDX-FileCopyrightText: 2025 Suguru Hirahara
+# SPDX-FileCopyrightText: 2026 MASH project contributors
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -41,16 +42,69 @@ qbittorrent_container_image_registry_prefix: "{{ qbittorrent_container_image_reg
 qbittorrent_container_image_registry_prefix_upstream: "{{ qbittorrent_container_image_registry_prefix_upstream_default }}"
 qbittorrent_container_image_registry_prefix_upstream_default: lscr.io/
 
+# Controls how the container network namespace is provided.
+#
+# Supported values:
+# - `managed`: this role creates and attaches the container to `qbittorrent_container_network`
+# - `container`: the container joins the network namespace of `qbittorrent_container_network_container`
+qbittorrent_container_network_mode: managed
+
+# Stable exact Docker name used to discover the container whose network
+# namespace qBittorrent joins in `container` mode. IDs are not accepted here;
+# the lifecycle helper resolves and validates the current full ID at runtime.
+qbittorrent_container_network_container: ""
+
+# The systemd service which manages `qbittorrent_container_network_container`.
+# This is required in `container` mode and is automatically rendered as both
+# `BindsTo=` and `After=`.
+qbittorrent_container_network_container_systemd_service: ""
+
+# Absolute host path to a resolver configuration supplied by the namespace
+# owner. This is required in `container` mode and is mounted read-only at
+# `/etc/resolv.conf` so qBittorrent does not use Docker's independent resolver.
+qbittorrent_container_network_container_resolv_conf_path: ""
+
 # The hostname to assign to the container (its `--hostname`).
 # Pinned to a stable value, because Docker otherwise randomizes it on each (re)creation,
 # which prevents qBittorrent from recovering from a stale `lockfile` left by an unclean shutdown.
-qbittorrent_container_hostname: "{{ qbittorrent_identifier }}"
+#
+# Docker does not permit `--hostname` together with `--network=container:...`.
+qbittorrent_container_hostname: "{{ qbittorrent_identifier if qbittorrent_container_network_mode == 'managed' else '' }}"
 
 # The base container network. It will be auto-created by this role if it doesn't exist already.
-qbittorrent_container_network: "{{ qbittorrent_identifier }}"
+# This must be empty in `container` mode, because the namespace owner manages the network.
+qbittorrent_container_network: "{{ qbittorrent_identifier if qbittorrent_container_network_mode == 'managed' else '' }}"
 
 # Control if the container network is deleted on uninstalling.
-qbittorrent_container_network_deletion_enabled: true
+# Network deletion is only applicable in `managed` mode.
+qbittorrent_container_network_deletion_enabled: "{{ qbittorrent_container_network_mode == 'managed' }}"
+
+# Controls how many times qBittorrent checks the namespace owner's Docker health
+# status before its own container is created.
+qbittorrent_container_network_container_healthcheck_retries: 60
+
+# Controls the delay between namespace-owner Docker health checks.
+qbittorrent_container_network_container_healthcheck_retry_delay_seconds: 2
+
+# Extra time reserved for Docker inspection and container creation after the
+# bounded cleanup and namespace-owner health-check budgets.
+qbittorrent_container_network_container_systemd_start_timeout_margin_seconds: 30
+
+# The complete systemd startup timeout for `container` mode. The default covers
+# the health-check retry budget and the cleanup/create margin above. Validation
+# prevents overriding it with a value below that budget.
+qbittorrent_container_network_container_systemd_start_timeout_seconds: >-
+  {{
+    (
+      (qbittorrent_container_network_container_healthcheck_retries | int)
+      *
+      (qbittorrent_container_network_container_healthcheck_retry_delay_seconds | int)
+    )
+    +
+    (qbittorrent_container_stop_grace_time_seconds | int)
+    +
+    (qbittorrent_container_network_container_systemd_start_timeout_margin_seconds | int)
+  }}
 
 # Specify how the container publishes its HTTP port (as defined by `qbittorrent_container_http_port`).
 # Can be used to access the web UI directly (bypassing Traefik)
@@ -130,6 +184,18 @@ qbittorrent_systemd_required_services_list: "{{ (qbittorrent_systemd_required_se
 qbittorrent_systemd_required_services_list_default: "{{ [devture_systemd_docker_base_docker_service_name] if devture_systemd_docker_base_docker_service_name else [] }}"
 qbittorrent_systemd_required_services_list_auto: []
 qbittorrent_systemd_required_services_list_custom: []
+
+# Absolute systemctl path used for fail-closed lifecycle verification.
+qbittorrent_systemd_systemctl_command: /usr/bin/systemctl
+
+# List of systemd services to which the qBittorrent service is bound.
+#
+# Each service is rendered as both `BindsTo=` and `After=`. In `container`
+# network mode the namespace-owner service is inserted automatically.
+qbittorrent_systemd_binds_to_services_list: "{{ (qbittorrent_systemd_binds_to_services_list_default + qbittorrent_systemd_binds_to_services_list_auto + qbittorrent_systemd_binds_to_services_list_custom) | unique }}"
+qbittorrent_systemd_binds_to_services_list_default: "{{ [qbittorrent_container_network_container_systemd_service] if qbittorrent_container_network_mode == 'container' and qbittorrent_container_network_container_systemd_service else [] }}"
+qbittorrent_systemd_binds_to_services_list_auto: []
+qbittorrent_systemd_binds_to_services_list_custom: []
 
 # List of systemd services that the qBittorrent systemd service wants
 qbittorrent_systemd_wanted_services_list: "{{ (qbittorrent_systemd_wanted_services_list_default + qbittorrent_systemd_wanted_services_list_auto + qbittorrent_systemd_wanted_services_list_custom) | unique }}"

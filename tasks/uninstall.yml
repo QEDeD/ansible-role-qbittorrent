@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2025 spatterlight
 # SPDX-FileCopyrightText: 2025, 2026 Suguru Hirahara
+# SPDX-FileCopyrightText: 2026 MASH project contributors
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -9,68 +10,237 @@
     path: "{{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service"
   register: qbittorrent_service_stat
 
-- name: Uninstall qBittorrent systemd services and files
+- name: Attempt to stop qBittorrent systemd during uninstall
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - stop
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_uninstall_systemd_stop_result
+  changed_when: false
+  failed_when: false
+
+- name: Attempt to disable qBittorrent systemd during uninstall
   when: qbittorrent_service_stat.stat.exists | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - disable
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_uninstall_systemd_disable_result
+  changed_when: false
+  failed_when: false
+
+- name: Query the exact qBittorrent container name during uninstall
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+      - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+  register: qbittorrent_uninstall_container_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Record exact qBittorrent container query results during uninstall
+  ansible.builtin.set_fact:
+    qbittorrent_uninstall_container_query_lines: >-
+      {{
+        qbittorrent_uninstall_container_query_result.stdout_lines
+        | default([])
+        | reject('equalto', '')
+        | list
+      }}
+    qbittorrent_uninstall_container_id: ""
+
+- name: Resolve the exact qBittorrent container ID during uninstall
+  when:
+    - qbittorrent_uninstall_container_query_result.rc == 0
+    - qbittorrent_uninstall_container_query_lines | length == 1
+    - qbittorrent_uninstall_container_query_lines[0].split('|') | length == 2
+    - qbittorrent_uninstall_container_query_lines[0].split('|')[1] == qbittorrent_identifier
+    - qbittorrent_uninstall_container_query_lines[0].split('|')[0] is match('^[a-f0-9]{64}$')
+  ansible.builtin.set_fact:
+    qbittorrent_uninstall_container_id: >-
+      {{ qbittorrent_uninstall_container_query_lines[0].split('|')[0] }}
+
+- name: Remove the originally resolved qBittorrent container ID during uninstall
+  when: qbittorrent_uninstall_container_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - rm
+      - --force
+      - "{{ qbittorrent_uninstall_container_id }}"
+  register: qbittorrent_uninstall_original_id_remove_result
+  changed_when: qbittorrent_uninstall_original_id_remove_result.rc == 0
+  failed_when: false
+
+- name: Remove the validated exact qBittorrent container name during uninstall
+  when:
+    - qbittorrent_identifier is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+    - qbittorrent_identifier is not match('^[a-f0-9]+$')
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - rm
+      - --force
+      - "{{ qbittorrent_identifier }}"
+  register: qbittorrent_uninstall_name_remove_result
+  changed_when: qbittorrent_uninstall_name_remove_result.rc == 0
+  failed_when: false
+
+- name: Query the exact qBittorrent container name after uninstall cleanup
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+      - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+  register: qbittorrent_uninstall_container_proof_result
+  changed_when: false
+  failed_when: false
+
+- name: Initialize original qBittorrent container-ID uninstall proof
+  ansible.builtin.set_fact:
+    qbittorrent_uninstall_original_id_absent: >-
+      {{ qbittorrent_uninstall_container_id | length == 0 }}
+
+- name: Query the original qBittorrent container ID after uninstall cleanup
+  when: qbittorrent_uninstall_container_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "id={{ qbittorrent_uninstall_container_id }}"
+      - "--format={{ '{{' }}.ID{{ '}}' }}"
+  register: qbittorrent_uninstall_original_id_proof_result
+  changed_when: false
+  failed_when: false
+
+- name: Record original qBittorrent container-ID uninstall proof
+  when: qbittorrent_uninstall_container_id | length > 0
+  ansible.builtin.set_fact:
+    qbittorrent_uninstall_original_id_absent: >-
+      {{
+        qbittorrent_uninstall_original_id_proof_result.rc == 0
+        and
+        (
+          qbittorrent_uninstall_original_id_proof_result.stdout_lines
+          | default([])
+          | reject('equalto', '')
+          | list
+          | length
+        )
+        == 0
+      }}
+
+- name: Query qBittorrent systemd state after uninstall cleanup
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - is-active
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_uninstall_systemd_state_result
+  changed_when: false
+  failed_when: false
+
+- name: Fail if qBittorrent uninstall isolation could not be proven
+  ansible.builtin.assert:
+    that:
+      - >-
+        qbittorrent_uninstall_systemd_state_result.stdout
+        | trim
+        in ['inactive', 'failed', 'unknown']
+      - qbittorrent_uninstall_container_proof_result.rc == 0
+      - >-
+        qbittorrent_uninstall_container_proof_result.stdout_lines
+        | default([])
+        | reject('equalto', '')
+        | list
+        | length
+        == 0
+      - qbittorrent_uninstall_original_id_absent | bool
+      - >-
+        not qbittorrent_service_stat.stat.exists | bool
+        or qbittorrent_uninstall_systemd_disable_result.rc | default(1) == 0
+    fail_msg: >-
+      qBittorrent systemd inactivity and exact-name Docker container absence must
+      both be proven before uninstall removes its files.
+
+- name: Ensure qBittorrent systemd service does not exist
+  ansible.builtin.file:
+    path: "{{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service"
+    state: absent
+
+- name: Ensure qBittorrent support files do not exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ qbittorrent_base_path }}/env"
+    - "{{ qbittorrent_base_path }}/labels"
+    - "{{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}-container-network-helper"
+
+- name: Reload systemd after removing the qBittorrent unit
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: Ensure qBittorrent local data path does not exist if empty
+  ansible.builtin.command:
+    cmd: "rmdir {{ qbittorrent_data_path }}"
+  register: qbittorrent_data_path_deletion_result
+  changed_when: qbittorrent_data_path_deletion_result.rc == 0
+  failed_when: false
+
+- name: Ensure qBittorrent local download data path does not exist if empty
+  ansible.builtin.command:
+    cmd: "rmdir {{ qbittorrent_download_path }}"
+  register: qbittorrent_download_path_deletion_result
+  changed_when: qbittorrent_download_path_deletion_result.rc == 0
+  failed_when: false
+
+- name: Ensure qBittorrent base path does not exist if empty
+  ansible.builtin.command:
+    cmd: "rmdir {{ qbittorrent_base_path }}"
+  register: qbittorrent_base_path_deletion_result
+  changed_when: qbittorrent_base_path_deletion_result.rc == 0
+  failed_when: false
+
+- name: Ensure qBittorrent container network does not exist
+  when:
+    - qbittorrent_container_network_mode == 'managed'
+    - qbittorrent_container_network_deletion_enabled | bool
   block:
-    - name: Ensure qBittorrent systemd service is stopped
-      ansible.builtin.service:
-        name: "{{ qbittorrent_identifier }}"
-        state: stopped
-        enabled: false
-        daemon_reload: true
-
-    - name: Ensure qBittorrent systemd service does not exist
-      ansible.builtin.file:
-        path: "{{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service"
+    - name: Ensure qBittorrent container network does not exist via community.docker.docker_network
+      when: devture_systemd_docker_base_container_network_creation_method == 'ansible-module'
+      community.docker.docker_network:
+        name: "{{ qbittorrent_container_network }}"
         state: absent
+      register: qbittorrent_network_deletion_result
 
-    - name: Ensure qBittorrent support files do not exist
-      ansible.builtin.file:
-        path: "{{ qbittorrent_base_path }}/{{ item }}"
-        state: absent
-      with_items:
-        - env
-        - labels
-
-    - name: Ensure qBittorrent local data path does not exist if empty
+    - name: Ensure qBittorrent container network does not exist via ansible.builtin.command
+      when: devture_systemd_docker_base_container_network_creation_method == 'command'
       ansible.builtin.command:
-        cmd: "rmdir {{ qbittorrent_data_path }}"
-      register: qbittorrent_data_path_deletion_result
-      changed_when: qbittorrent_data_path_deletion_result.rc == 0
-      failed_when: false
-
-    - name: Ensure qBittorrent local download data path does not exist if empty
-      ansible.builtin.command:
-        cmd: "rmdir {{ qbittorrent_download_path }}"
-      register: qbittorrent_download_path_deletion_result
-      changed_when: qbittorrent_download_path_deletion_result.rc == 0
-      failed_when: false
-
-    - name: Ensure qBittorrent base path does not exist if empty
-      ansible.builtin.command:
-        cmd: "rmdir {{ qbittorrent_base_path }}"
-      register: qbittorrent_base_path_deletion_result
-      changed_when: qbittorrent_base_path_deletion_result.rc == 0
-      failed_when: false
-
-    - name: Ensure qBittorrent container network does not exist
-      when: qbittorrent_container_network_deletion_enabled
-      block:
-        - name: Ensure qBittorrent container network does not exist via community.docker.docker_network
-          when: devture_systemd_docker_base_container_network_creation_method == 'ansible-module'
-          community.docker.docker_network:
-            name: "{{ qbittorrent_container_network }}"
-            state: absent
-          register: qbittorrent_network_deletion_result
-
-        - name: Ensure qBittorrent container network does not exist via ansible.builtin.command
-          when: devture_systemd_docker_base_container_network_creation_method == 'command'
-          ansible.builtin.command:
-            cmd: >-
-              {{ devture_systemd_docker_base_host_command_docker }} network rm
-              {{ qbittorrent_container_network }}
-          register: qbittorrent_network_deletion_result
-          changed_when: qbittorrent_container_network in qbittorrent_network_deletion_result.stdout
+        cmd: >-
+          {{ devture_systemd_docker_base_host_command_docker }} network rm
+          {{ qbittorrent_container_network }}
+      register: qbittorrent_network_deletion_result
+      changed_when: qbittorrent_container_network in qbittorrent_network_deletion_result.stdout
 
 - name: Check existence of qBittorrent local data path
   ansible.builtin.stat:

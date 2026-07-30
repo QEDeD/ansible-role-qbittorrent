@@ -1,9 +1,579 @@
 # SPDX-FileCopyrightText: 2025 Slavi Pantaleev
 # SPDX-FileCopyrightText: 2025 spatterlight
+# SPDX-FileCopyrightText: 2026 MASH project contributors
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 ---
+- name: Query the exact qBittorrent namespace-owner container name before migration
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "name=^/{{ qbittorrent_container_network_container | replace('.', '[.]') }}$"
+      - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+  register: qbittorrent_container_network_migration_owner_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Record exact qBittorrent namespace-owner query results
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_owner_query_lines: >-
+      {{
+        qbittorrent_container_network_migration_owner_query_result.stdout_lines
+        | default([])
+        | reject('equalto', '')
+        | list
+      }}
+
+- name: Resolve the exact qBittorrent namespace-owner container ID
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_owner_id: >-
+      {{
+        qbittorrent_container_network_migration_owner_query_lines[0].split('|')[0]
+        if
+          qbittorrent_container_network_migration_owner_query_result.rc == 0
+          and qbittorrent_container_network_migration_owner_query_lines | length == 1
+          and qbittorrent_container_network_migration_owner_query_lines[0].split('|') | length == 2
+          and
+          qbittorrent_container_network_migration_owner_query_lines[0].split('|')[1]
+          == qbittorrent_container_network_container
+          and
+          qbittorrent_container_network_migration_owner_query_lines[0].split('|')[0]
+          is match('^[a-f0-9]{64}$')
+        else ''
+      }}
+    qbittorrent_container_network_migration_owner_identity_valid: false
+
+- name: Inspect the resolved qBittorrent namespace-owner identity before migration
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_owner_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - inspect
+      - "--format={{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}"
+      - "{{ qbittorrent_container_network_migration_owner_id }}"
+  register: qbittorrent_container_network_migration_owner_identity_result
+  changed_when: false
+  failed_when: false
+
+- name: Record the resolved qBittorrent namespace-owner identity
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_owner_id | length > 0
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_owner_identity_valid: >-
+      {{
+        qbittorrent_container_network_migration_owner_identity_result.rc == 0
+        and
+        (
+          qbittorrent_container_network_migration_owner_identity_result.stdout
+          | trim
+          | split('|')
+          | length
+        )
+        == 3
+        and
+        (
+          qbittorrent_container_network_migration_owner_identity_result.stdout
+          | trim
+          | split('|')
+          | first
+        )
+        == qbittorrent_container_network_migration_owner_id
+        and
+        (
+          qbittorrent_container_network_migration_owner_identity_result.stdout
+          | trim
+          | split('|')
+        )[1]
+        == '/' + qbittorrent_container_network_container
+        and
+        (
+          qbittorrent_container_network_migration_owner_identity_result.stdout
+          | trim
+          | split('|')
+          | last
+        )
+        == 'true'
+      }}
+
+- name: Query the exact qBittorrent container name before migration
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+      - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+  register: qbittorrent_container_network_migration_qbittorrent_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Record exact qBittorrent container query results
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_qbittorrent_query_lines: >-
+      {{
+        qbittorrent_container_network_migration_qbittorrent_query_result.stdout_lines
+        | default([])
+        | reject('equalto', '')
+        | list
+      }}
+
+- name: Resolve the exact qBittorrent container ID before migration
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_qbittorrent_id: >-
+      {{
+        qbittorrent_container_network_migration_qbittorrent_query_lines[0].split('|')[0]
+        if
+          qbittorrent_container_network_migration_qbittorrent_query_result.rc == 0
+          and qbittorrent_container_network_migration_qbittorrent_query_lines | length == 1
+          and qbittorrent_container_network_migration_qbittorrent_query_lines[0].split('|') | length == 2
+          and
+          qbittorrent_container_network_migration_qbittorrent_query_lines[0].split('|')[1]
+          == qbittorrent_identifier
+          and
+          qbittorrent_container_network_migration_qbittorrent_query_lines[0].split('|')[0]
+          is match('^[a-f0-9]{64}$')
+        else ''
+      }}
+    qbittorrent_container_network_migration_qbittorrent_identity_valid: false
+    qbittorrent_container_network_migration_current_mode: >-
+      ''
+    qbittorrent_container_network_migration_current_running: false
+
+- name: Inspect the resolved qBittorrent container identity before migration
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_qbittorrent_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - inspect
+      - "--format={{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.HostConfig.NetworkMode{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}"
+      - "{{ qbittorrent_container_network_migration_qbittorrent_id }}"
+  register: qbittorrent_container_network_migration_qbittorrent_identity_result
+  changed_when: false
+  failed_when: false
+
+- name: Record the resolved qBittorrent container identity before migration
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_qbittorrent_id | length > 0
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_qbittorrent_identity_valid: >-
+      {{
+        qbittorrent_container_network_migration_qbittorrent_identity_result.rc == 0
+        and
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+          | length
+        )
+        == 4
+        and
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+          | first
+        )
+        == qbittorrent_container_network_migration_qbittorrent_id
+        and
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+        )[1]
+        == '/' + qbittorrent_identifier
+        and
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+        )[2]
+        | length
+        > 0
+        and
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+          | last
+        )
+        in ['true', 'false']
+      }}
+    qbittorrent_container_network_migration_current_mode: >-
+      {{
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+        )[2]
+        if
+          qbittorrent_container_network_migration_qbittorrent_identity_result.rc == 0
+          and
+          (
+            qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+            | trim
+            | split('|')
+            | length
+          )
+          == 4
+        else ''
+      }}
+    qbittorrent_container_network_migration_current_running: >-
+      {{
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+          | last
+        )
+        == 'true'
+        if
+          qbittorrent_container_network_migration_qbittorrent_identity_result.rc == 0
+          and
+          (
+            qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+            | trim
+            | split('|')
+            | length
+          )
+          == 4
+        else false
+      }}
+
+- name: Determine whether qBittorrent needs to be isolated for a container-network migration
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_requires_isolation: >-
+      {{
+        not qbittorrent_container_network_migration_owner_identity_valid | bool
+        or not qbittorrent_container_network_migration_qbittorrent_identity_valid | bool
+        or qbittorrent_container_network_migration_current_mode
+        != 'container:' + qbittorrent_container_network_migration_owner_id
+      }}
+
+- name: Attempt to stop qBittorrent systemd before unsafe container-network migration
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - stop
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_container_network_migration_systemd_stop_result
+  changed_when: false
+  failed_when: false
+
+- name: Remove the originally resolved qBittorrent ID before an unsafe migration
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_qbittorrent_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - rm
+      - --force
+      - "{{ qbittorrent_container_network_migration_qbittorrent_id }}"
+  register: qbittorrent_container_network_migration_original_remove_result
+  changed_when: qbittorrent_container_network_migration_original_remove_result.rc == 0
+  failed_when: false
+
+- name: Remove the validated exact qBittorrent name before an unsafe migration
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - rm
+      - --force
+      - "{{ qbittorrent_identifier }}"
+  register: qbittorrent_container_network_migration_name_remove_result
+  changed_when: qbittorrent_container_network_migration_name_remove_result.rc == 0
+  failed_when: false
+
+- name: Query qBittorrent systemd state after container-network isolation
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - is-active
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_container_network_migration_systemd_state_result
+  changed_when: false
+  failed_when: false
+
+- name: Query the exact qBittorrent container name after container-network isolation
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+      - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+  register: qbittorrent_container_network_migration_isolation_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Record exact qBittorrent isolation query results
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_isolation_query_lines: >-
+      {{
+        qbittorrent_container_network_migration_isolation_query_result.stdout_lines
+        | default([])
+        | reject('equalto', '')
+        | list
+      }}
+    qbittorrent_container_network_migration_isolation_remaining_id: ""
+    qbittorrent_container_network_migration_isolation_container_safe: >-
+      {{
+        qbittorrent_container_network_migration_isolation_query_result.rc == 0
+        and
+        (
+          qbittorrent_container_network_migration_isolation_query_result.stdout_lines
+          | default([])
+          | reject('equalto', '')
+          | list
+          | length
+        )
+        == 0
+      }}
+
+- name: Resolve a remaining exact qBittorrent container after isolation
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_isolation_query_result.rc == 0
+    - qbittorrent_container_network_migration_isolation_query_lines | length == 1
+    - qbittorrent_container_network_migration_isolation_query_lines[0].split('|') | length == 2
+    - qbittorrent_container_network_migration_isolation_query_lines[0].split('|')[1] == qbittorrent_identifier
+    - qbittorrent_container_network_migration_isolation_query_lines[0].split('|')[0] is match('^[a-f0-9]{64}$')
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_isolation_remaining_id: >-
+      {{ qbittorrent_container_network_migration_isolation_query_lines[0].split('|')[0] }}
+
+- name: Inspect a remaining exact qBittorrent container after isolation
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_isolation_remaining_id | default('') | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - inspect
+      - "--format={{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}"
+      - "{{ qbittorrent_container_network_migration_isolation_remaining_id }}"
+  register: qbittorrent_container_network_migration_isolation_remaining_result
+  changed_when: false
+  failed_when: false
+
+- name: Record a safely stopped remaining qBittorrent container
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_isolation_remaining_id | default('') | length > 0
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_isolation_container_safe: >-
+      {{
+        qbittorrent_container_network_migration_isolation_remaining_result.rc == 0
+        and
+        (
+          qbittorrent_container_network_migration_isolation_remaining_result.stdout
+          | trim
+          | split('|')
+          | length
+        )
+        == 3
+        and
+        (
+          qbittorrent_container_network_migration_isolation_remaining_result.stdout
+          | trim
+          | split('|')
+          | first
+        )
+        == qbittorrent_container_network_migration_isolation_remaining_id
+        and
+        (
+          qbittorrent_container_network_migration_isolation_remaining_result.stdout
+          | trim
+          | split('|')
+        )[1]
+        == '/' + qbittorrent_identifier
+        and
+        (
+          qbittorrent_container_network_migration_isolation_remaining_result.stdout
+          | trim
+          | split('|')
+          | last
+        )
+        == 'false'
+      }}
+
+- name: Initialize original qBittorrent container-ID isolation proof
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_original_id_safe: >-
+      {{ qbittorrent_container_network_migration_qbittorrent_id | length == 0 }}
+
+- name: Query the original qBittorrent container ID after isolation
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_qbittorrent_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "id={{ qbittorrent_container_network_migration_qbittorrent_id }}"
+      - "--format={{ '{{' }}.ID{{ '}}' }}"
+  register: qbittorrent_container_network_migration_original_id_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Record original qBittorrent container-ID query results
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_qbittorrent_id | length > 0
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_original_id_query_lines: >-
+      {{
+        qbittorrent_container_network_migration_original_id_query_result.stdout_lines
+        | default([])
+        | reject('equalto', '')
+        | list
+      }}
+    qbittorrent_container_network_migration_original_id_safe: >-
+      {{
+        qbittorrent_container_network_migration_original_id_query_result.rc == 0
+        and
+        (
+          qbittorrent_container_network_migration_original_id_query_result.stdout_lines
+          | default([])
+          | reject('equalto', '')
+          | list
+          | length
+        )
+        == 0
+      }}
+
+- name: Inspect the remaining original qBittorrent container ID after isolation
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_qbittorrent_id | length > 0
+    - qbittorrent_container_network_migration_original_id_query_result.rc == 0
+    - qbittorrent_container_network_migration_original_id_query_lines | length == 1
+    - >-
+      qbittorrent_container_network_migration_original_id_query_lines[0]
+      == qbittorrent_container_network_migration_qbittorrent_id
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - inspect
+      - "--format={{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}"
+      - "{{ qbittorrent_container_network_migration_qbittorrent_id }}"
+  register: qbittorrent_container_network_migration_original_id_inspect_result
+  changed_when: false
+  failed_when: false
+
+- name: Record a safely stopped original qBittorrent container ID
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+    - qbittorrent_container_network_migration_original_id_inspect_result is defined
+    - not qbittorrent_container_network_migration_original_id_inspect_result.skipped | default(false)
+  ansible.builtin.set_fact:
+    qbittorrent_container_network_migration_original_id_safe: >-
+      {{
+        qbittorrent_container_network_migration_original_id_inspect_result.rc == 0
+        and
+        (
+          qbittorrent_container_network_migration_original_id_inspect_result.stdout
+          | trim
+          | split('|')
+          | length
+        )
+        == 2
+        and
+        (
+          qbittorrent_container_network_migration_original_id_inspect_result.stdout
+          | trim
+          | split('|')
+          | first
+        )
+        == qbittorrent_container_network_migration_qbittorrent_id
+        and
+        (
+          qbittorrent_container_network_migration_original_id_inspect_result.stdout
+          | trim
+          | split('|')
+          | last
+        )
+        == 'false'
+      }}
+
+- name: Fail if qBittorrent isolation could not be verified
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_migration_requires_isolation | bool
+  ansible.builtin.assert:
+    that:
+      - >-
+        qbittorrent_container_network_migration_systemd_state_result.stdout
+        | trim
+        in ['inactive', 'failed', 'unknown']
+      - qbittorrent_container_network_migration_isolation_container_safe | bool
+      - qbittorrent_container_network_migration_original_id_safe | bool
+    fail_msg: >-
+      qBittorrent systemd and Docker isolation must both be proven before
+      continuing because its current network namespace does not match the
+      exact-name namespace owner.
+
 - name: Ensure qBittorrent paths exist
   ansible.builtin.file:
     path: "{{ item }}"
@@ -28,6 +598,358 @@
     - labels
   register: qbittorrent_support_files_result
 
+- name: Ensure qBittorrent container-network helper is installed
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.copy:
+    dest: "{{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}-container-network-helper"
+    mode: "0755"
+    owner: root
+    group: root
+    content: |
+      #!/bin/sh
+      set -eu
+
+      docker_command={{ devture_systemd_docker_base_host_command_docker | quote }}
+      owner_name={{ qbittorrent_container_network_container | quote }}
+      owner_name_filter={{ ('name=^/' ~ (qbittorrent_container_network_container | replace('.', '[.]')) ~ '$') | quote }}
+      qbittorrent_name={{ qbittorrent_identifier | quote }}
+      qbittorrent_name_filter={{ ('name=^/' ~ (qbittorrent_identifier | replace('.', '[.]')) ~ '$') | quote }}
+      health_retries={{ qbittorrent_container_network_container_healthcheck_retries | string | quote }}
+      health_retry_delay={{ qbittorrent_container_network_container_healthcheck_retry_delay_seconds | string | quote }}
+      stop_grace_time={{ qbittorrent_container_stop_grace_time_seconds | string | quote }}
+      qbittorrent_uid={{ qbittorrent_uid | string | quote }}
+      qbittorrent_gid={{ qbittorrent_gid | string | quote }}
+      env_file={{ (qbittorrent_base_path ~ '/env') | quote }}
+      labels_file={{ (qbittorrent_base_path ~ '/labels') | quote }}
+      data_path={{ qbittorrent_data_path | quote }}
+      download_path={{ qbittorrent_download_path | quote }}
+      download_bind_path={{ qbittorrent_download_bind_path | quote }}
+      resolv_conf_path={{ qbittorrent_container_network_container_resolv_conf_path | quote }}
+      container_image={{ qbittorrent_container_image | quote }}
+      state_directory={{ ('/run/' ~ qbittorrent_identifier ~ '-container-network') | quote }}
+      owner_state_file="$state_directory/owner-id"
+      qbittorrent_state_file="$state_directory/qbittorrent-id"
+
+      is_full_container_id() {
+        candidate_id=$1
+        candidate_id_length=$(printf '%s' "$candidate_id" | wc -c)
+        [ "$candidate_id_length" -eq 64 ] || return 1
+        case "$candidate_id" in
+          *[!a-f0-9]*) return 1 ;;
+        esac
+      }
+
+      discover_exact_container_id() {
+        expected_name=$1
+        exact_name_filter=$2
+        identity=$(
+          "$docker_command" container ls --all --no-trunc \
+            --filter "$exact_name_filter" \
+            --format='{{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}'
+        ) || return 1
+
+        candidate_id=${identity%%|*}
+        candidate_name=${identity#*|}
+        [ "$candidate_name" != "$identity" ] || return 1
+        case "$candidate_name" in
+          *'|'*) return 1 ;;
+        esac
+        [ "$candidate_name" = "$expected_name" ] || return 1
+        is_full_container_id "$candidate_id" || return 1
+        printf '%s\n' "$candidate_id"
+      }
+
+      owner_identity_is_healthy() {
+        expected_id=$1
+        identity=$(
+          "$docker_command" container inspect \
+            --format='{{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}|{{ '{{' }}.State.Health.Status{{ '}}' }}' \
+            "$expected_id"
+        ) || return 1
+
+        candidate_id=${identity%%|*}
+        identity_remainder=${identity#*|}
+        [ "$identity_remainder" != "$identity" ] || return 1
+        candidate_name=${identity_remainder%%|*}
+        identity_remainder=${identity_remainder#*|}
+        candidate_running=${identity_remainder%%|*}
+        candidate_health=${identity_remainder#*|}
+        [ "$candidate_health" != "$identity_remainder" ] || return 1
+        case "$candidate_health" in
+          *'|'*) return 1 ;;
+        esac
+        [ "$candidate_id" = "$expected_id" ] || return 1
+        [ "$candidate_name" = "/$owner_name" ] || return 1
+        [ "$candidate_running" = true ] || return 1
+        [ "$candidate_health" = healthy ] || return 1
+      }
+
+      qbittorrent_identity_is_safe() {
+        expected_qbittorrent_id=$1
+        expected_owner_id=$2
+        identity=$(
+          "$docker_command" container inspect \
+            --format='{{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.HostConfig.NetworkMode{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}' \
+            "$expected_qbittorrent_id"
+        ) || return 1
+
+        candidate_id=${identity%%|*}
+        identity_remainder=${identity#*|}
+        [ "$identity_remainder" != "$identity" ] || return 1
+        candidate_name=${identity_remainder%%|*}
+        identity_remainder=${identity_remainder#*|}
+        candidate_network_mode=${identity_remainder%%|*}
+        candidate_running=${identity_remainder#*|}
+        [ "$candidate_running" != "$identity_remainder" ] || return 1
+        case "$candidate_running" in
+          *'|'*) return 1 ;;
+        esac
+        [ "$candidate_id" = "$expected_qbittorrent_id" ] || return 1
+        [ "$candidate_name" = "/$qbittorrent_name" ] || return 1
+        [ "$candidate_network_mode" = "container:$expected_owner_id" ] || return 1
+        [ "$candidate_running" = false ] || return 1
+      }
+
+      exact_qbittorrent_name_is_absent() {
+        identity=$(
+          "$docker_command" container ls --all --no-trunc \
+            --filter "$qbittorrent_name_filter" \
+            --format='{{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}'
+        ) || return 1
+        [ -z "$identity" ]
+      }
+
+      exact_container_id_is_absent() {
+        expected_id=$1
+        is_full_container_id "$expected_id" || return 1
+        identity=$(
+          "$docker_command" container ls --all --no-trunc \
+            --filter "id=$expected_id" \
+            --format='{{ '{{' }}.ID{{ '}}' }}'
+        ) || return 1
+        [ -z "$identity" ]
+      }
+
+      remove_qbittorrent_id() {
+        candidate_id=$1
+        is_full_container_id "$candidate_id" || return 1
+        "$docker_command" container stop --time "$stop_grace_time" "$candidate_id" >/dev/null 2>&1 || true
+        "$docker_command" container rm --force "$candidate_id" >/dev/null 2>&1 || true
+        exact_container_id_is_absent "$candidate_id"
+      }
+
+      read_container_id() {
+        state_file=$1
+        [ -f "$state_file" ] || return 1
+        candidate_id=
+        IFS= read -r candidate_id < "$state_file" || return 1
+        is_full_container_id "$candidate_id" || return 1
+        printf '%s\n' "$candidate_id"
+      }
+
+      write_container_ids() {
+        expected_owner_id=$1
+        expected_qbittorrent_id=$2
+        owner_state_file_temporary="$owner_state_file.tmp.$$"
+        qbittorrent_state_file_temporary="$qbittorrent_state_file.tmp.$$"
+        umask 077
+        printf '%s\n' "$expected_owner_id" > "$owner_state_file_temporary" || return 1
+        printf '%s\n' "$expected_qbittorrent_id" > "$qbittorrent_state_file_temporary" || return 1
+        mv "$owner_state_file_temporary" "$owner_state_file" || return 1
+        mv "$qbittorrent_state_file_temporary" "$qbittorrent_state_file" || return 1
+      }
+
+      clear_container_ids() {
+        rm -f "$owner_state_file" "$qbittorrent_state_file" \
+          "$owner_state_file.tmp."* "$qbittorrent_state_file.tmp."*
+      }
+
+      cleanup_container() {
+        cleanup_saved_qbittorrent_id=
+        cleanup_named_qbittorrent_id=
+        cleanup_status=0
+
+        if [ -f "$qbittorrent_state_file" ]; then
+          if ! cleanup_saved_qbittorrent_id=$(read_container_id "$qbittorrent_state_file"); then
+            echo "Cannot validate the remembered qBittorrent container ID during cleanup" >&2
+            cleanup_status=1
+          elif ! remove_qbittorrent_id "$cleanup_saved_qbittorrent_id"; then
+            echo "Cannot remove and prove absence of the remembered qBittorrent container ID" >&2
+            cleanup_status=1
+          fi
+        fi
+
+        if cleanup_named_qbittorrent_id=$(discover_exact_container_id "$qbittorrent_name" "$qbittorrent_name_filter"); then
+          if [ "$cleanup_named_qbittorrent_id" != "$cleanup_saved_qbittorrent_id" ] \
+            && ! remove_qbittorrent_id "$cleanup_named_qbittorrent_id"; then
+            echo "Cannot remove and prove absence of the exact-name qBittorrent container" >&2
+            cleanup_status=1
+          fi
+        elif ! exact_qbittorrent_name_is_absent; then
+          echo "Cannot prove the exact qBittorrent container is absent during cleanup" >&2
+          cleanup_status=1
+        fi
+
+        if [ -n "$cleanup_saved_qbittorrent_id" ] \
+          && ! exact_container_id_is_absent "$cleanup_saved_qbittorrent_id"; then
+          echo "Remembered qBittorrent container ID reappeared during cleanup" >&2
+          cleanup_status=1
+        fi
+        if [ -n "$cleanup_named_qbittorrent_id" ] \
+          && ! exact_container_id_is_absent "$cleanup_named_qbittorrent_id"; then
+          echo "Exact-name qBittorrent container ID reappeared during cleanup" >&2
+          cleanup_status=1
+        fi
+        if ! exact_qbittorrent_name_is_absent; then
+          echo "Exact qBittorrent container name reappeared during cleanup" >&2
+          cleanup_status=1
+        fi
+        if [ "$cleanup_status" -ne 0 ]; then
+          return 1
+        fi
+        clear_container_ids
+      }
+
+      prepare_container() {
+      attempt=1
+      owner_id=
+      while [ "$attempt" -le "$health_retries" ]; do
+        first_owner_id=
+        second_owner_id=
+        if first_owner_id=$(discover_exact_container_id "$owner_name" "$owner_name_filter") \
+          && owner_identity_is_healthy "$first_owner_id" \
+          && second_owner_id=$(discover_exact_container_id "$owner_name" "$owner_name_filter") \
+          && [ "$first_owner_id" = "$second_owner_id" ] \
+          && owner_identity_is_healthy "$second_owner_id"; then
+          owner_id=$second_owner_id
+          break
+        fi
+
+        if [ "$attempt" -lt "$health_retries" ]; then
+          sleep "$health_retry_delay"
+        fi
+        attempt=$((attempt + 1))
+      done
+
+      if [ -z "$owner_id" ]; then
+        echo "Exact namespace owner $owner_name did not become healthy with a stable full container ID" >&2
+        exit 1
+      fi
+
+      if [ ! -f "$resolv_conf_path" ] || [ -L "$resolv_conf_path" ]; then
+        echo "Namespace-owner resolver source must be an existing regular non-symlink file" >&2
+        exit 1
+      fi
+
+      qbit_id=
+      if ! qbit_id=$(
+        "$docker_command" create \
+          --rm \
+          "--name=$qbittorrent_name" \
+          --log-driver=none \
+          "--user=$qbittorrent_uid:$qbittorrent_gid" \
+          --cap-drop=ALL \
+          --cap-add=CHOWN \
+          --cap-add=DAC_OVERRIDE \
+          --cap-add=FOWNER \
+          --cap-add=SETGID \
+          --cap-add=SETUID \
+          --read-only \
+          "--network=container:$owner_id" \
+          "--env-file=$env_file" \
+          "--label-file=$labels_file" \
+          "--mount=type=bind,src=$data_path,dst=/config" \
+          "--mount=type=bind,src=$download_path,dst=$download_bind_path" \
+          "--mount=type=bind,src=$resolv_conf_path,dst=/etc/resolv.conf,readonly" \
+      {% for volume in qbittorrent_container_additional_volumes %}
+          {{ ('--mount=type=' ~ (volume.type | default('bind' if '/' in volume.src else 'volume')) ~ ',src=' ~ volume.src ~ ',dst=' ~ volume.dst ~ ((',' ~ volume.options) if volume.options | default('') else '')) | quote }} \
+      {% endfor %}
+          {{ ('--tmpfs=/run:rw,exec,nosuid,size=' ~ qbittorrent_container_tmpfs_run_size) | quote }} \
+          "$container_image"
+      ); then
+        cleanup_container || true
+        echo "Failed to create qBittorrent with a resolved namespace-owner ID" >&2
+        exit 1
+      fi
+
+      if ! is_full_container_id "$qbit_id"; then
+        cleanup_container || true
+        echo "Docker returned an invalid qBittorrent container ID" >&2
+        exit 1
+      fi
+
+      final_owner_id=
+      if ! final_owner_id=$(discover_exact_container_id "$owner_name" "$owner_name_filter") \
+        || [ "$final_owner_id" != "$owner_id" ] \
+        || ! owner_identity_is_healthy "$owner_id" \
+        || ! qbittorrent_identity_is_safe "$qbit_id" "$owner_id"; then
+        remove_qbittorrent_id "$qbit_id" || true
+        cleanup_container || true
+        echo "Namespace-owner identity or health changed while creating qBittorrent" >&2
+        exit 1
+      fi
+
+      if ! write_container_ids "$owner_id" "$qbit_id"; then
+        remove_qbittorrent_id "$qbit_id" || true
+        cleanup_container || true
+        echo "Failed to record immutable container IDs for qBittorrent startup" >&2
+        exit 1
+      fi
+      return 0
+      }
+
+      start_container() {
+        owner_id=$(read_container_id "$owner_state_file") || {
+          echo "Missing or invalid namespace-owner ID state" >&2
+          return 1
+        }
+        qbit_id=$(read_container_id "$qbittorrent_state_file") || {
+          echo "Missing or invalid qBittorrent ID state" >&2
+          return 1
+        }
+        current_owner_id=$(discover_exact_container_id "$owner_name" "$owner_name_filter") || {
+          echo "Exact namespace-owner name is no longer resolvable" >&2
+          return 1
+        }
+        [ "$current_owner_id" = "$owner_id" ] || {
+          echo "Namespace-owner name resolves to a replacement container ID" >&2
+          return 1
+        }
+        owner_identity_is_healthy "$owner_id" || {
+          echo "Namespace owner is not healthy immediately before qBittorrent start" >&2
+          return 1
+        }
+        qbittorrent_identity_is_safe "$qbit_id" "$owner_id" || {
+          echo "qBittorrent identity or namespace binding is unsafe before start" >&2
+          return 1
+        }
+        exec "$docker_command" start --attach "$qbit_id"
+      }
+
+      case "${1:-}" in
+        cleanup)
+          cleanup_container
+          ;;
+        prepare)
+          prepare_container
+          ;;
+        start)
+          start_container
+          ;;
+        *)
+          echo "Usage: $0 {cleanup|prepare|start}" >&2
+          exit 2
+          ;;
+      esac
+  register: qbittorrent_container_network_helper_installation_result
+
+- name: Ensure stale qBittorrent container-network helper is removed in managed mode
+  when: qbittorrent_container_network_mode == 'managed'
+  ansible.builtin.file:
+    path: "{{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}-container-network-helper"
+    state: absent
+  register: qbittorrent_container_network_helper_removal_result
+
 - name: Ensure qBittorrent container image is pulled via community.docker.docker_image_pull
   when: devture_systemd_docker_base_container_image_pull_method == 'ansible-module'
   community.docker.docker_image_pull:
@@ -49,7 +971,9 @@
   changed_when: "'Downloaded newer image' in qbittorrent_container_image_pull_result_command.stdout"
 
 - name: Ensure qBittorrent container network is created via community.docker.docker_network
-  when: devture_systemd_docker_base_container_network_creation_method == 'ansible-module'
+  when:
+    - qbittorrent_container_network_mode == 'managed'
+    - devture_systemd_docker_base_container_network_creation_method == 'ansible-module'
   community.docker.docker_network:
     enable_ipv6: "{{ devture_systemd_docker_base_ipv6_enabled }}"
     name: "{{ qbittorrent_container_network }}"
@@ -58,7 +982,9 @@
   register: qbittorrent_network_creation_result
 
 - name: Ensure qBittorrent container network is created via ansible.builtin.command
-  when: devture_systemd_docker_base_container_network_creation_method == 'command'
+  when:
+    - qbittorrent_container_network_mode == 'managed'
+    - devture_systemd_docker_base_container_network_creation_method == 'command'
   ansible.builtin.command:
     cmd: >-
       {{ devture_systemd_docker_base_host_command_docker }} network create
@@ -81,6 +1007,8 @@
     qbittorrent_restart_necessary: >-
       {{
         qbittorrent_support_files_result.changed | default(false)
+        or qbittorrent_container_network_helper_installation_result.changed | default(false)
+        or qbittorrent_container_network_helper_removal_result.changed | default(false)
         or qbittorrent_systemd_service_result.changed | default(false)
         or qbittorrent_container_image_pull_result_ansible_module.changed | default(false)
         or qbittorrent_container_image_pull_result_command.changed | default(false)

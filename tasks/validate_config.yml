@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2023 Slavi Pantaleev
 # SPDX-FileCopyrightText: 2025 spatterlight
+# SPDX-FileCopyrightText: 2026 MASH project contributors
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -27,7 +28,325 @@
     - qbittorrent_gid
     - qbittorrent_hostname
     - qbittorrent_path_prefix
+    - qbittorrent_container_network_mode
+
+- name: Fail if qBittorrent container network mode is unsupported
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_mode must be one of `managed` or `container`,
+      but it is set to `{{ qbittorrent_container_network_mode }}`.
+  when: qbittorrent_container_network_mode not in ['managed', 'container']
+
+- name: Fail if qBittorrent identifier is not an unambiguous exact Docker name
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_identifier must be a stable Docker name containing only letters,
+      digits, underscores, periods, and hyphens; it must not look like a Docker ID.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_identifier is not match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      or qbittorrent_identifier is match('^[a-f0-9]+$')
+
+- name: Fail if qBittorrent systemctl command path is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_systemd_systemctl_command must be an absolute executable path
+      containing only letters, digits, underscores, periods, slashes, and hyphens.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_systemd_systemctl_command is not match('^/[A-Za-z0-9_./-]+$')
+
+- name: Fail if required qBittorrent managed-network settings are not defined
+  ansible.builtin.fail:
+    msg: >-
+      You need to define a required managed-network configuration setting (`{{ item }}`).
+  when:
+    - qbittorrent_container_network_mode == 'managed'
+    - lookup('vars', item, default='') | string | length == 0
+  with_items:
+    - qbittorrent_container_hostname
     - qbittorrent_container_network
+
+- name: Fail if qBittorrent namespace-owner settings are set in managed-network mode
+  ansible.builtin.fail:
+    msg: >-
+      {{ item }} is only valid when qbittorrent_container_network_mode is
+      `container`.
+  when:
+    - qbittorrent_container_network_mode == 'managed'
+    - lookup('vars', item, default='') | string | length > 0
+  loop:
+    - qbittorrent_container_network_container
+    - qbittorrent_container_network_container_systemd_service
+    - qbittorrent_container_network_container_resolv_conf_path
+
+- name: Fail if required qBittorrent namespace-owner settings are not defined
+  ansible.builtin.fail:
+    msg: >-
+      You need to define {{ item }} when qbittorrent_container_network_mode is
+      `container`.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - lookup('vars', item, default='') | string | length == 0
+  loop:
+    - qbittorrent_container_network_container
+    - qbittorrent_container_network_container_systemd_service
+    - qbittorrent_container_network_container_resolv_conf_path
+
+- name: Fail if qBittorrent namespace-owner resolver path is invalid
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container_resolv_conf_path must be an
+      absolute string path without commas or control characters.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_resolv_conf_path is not string
+      or
+      (
+        qbittorrent_container_network_container_resolv_conf_path
+        is not match('^/[^,\r\n]+$')
+      )
+      or
+      qbittorrent_container_network_container_resolv_conf_path
+      is search('(?:^|/)[.]{1,2}(?:/|$)')
+
+- name: Fail if qBittorrent namespace-owner resolver path exposes host control
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container_resolv_conf_path must not expose
+      a container-engine control socket, the host root, /proc, /sys, /dev, or a
+      broad control-bearing parent path.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_resolv_conf_path
+      is match('^/(?:$|run/?$|var/?$|var/run/?$|var/lib/?$|var/lib/docker(?:/|$)|proc(?:/|$)|sys(?:/|$)|dev(?:/|$))')
+      or
+      qbittorrent_container_network_container_resolv_conf_path
+      is search('(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)')
+
+- name: Fail if qBittorrent namespace-owner container is not a stable exact Docker name
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container must be a stable Docker name
+      containing only letters, digits, underscores, periods, and hyphens.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_container is not match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+
+- name: Fail if qBittorrent namespace-owner container refers to itself
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container must not refer to the qBittorrent
+      container itself.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_network_container == qbittorrent_identifier
+
+- name: Fail if qBittorrent namespace-owner systemd service name is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container_systemd_service must be a `.service`
+      unit name containing only letters, digits, colons, underscores, periods,
+      at-signs, and hyphens.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_systemd_service
+      is not match('^[A-Za-z0-9][A-Za-z0-9:_.@-]*[.]service$')
+
+- name: Fail if qBittorrent namespace-owner systemd service refers to qBittorrent
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container_systemd_service must not refer to
+      the qBittorrent service itself.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_systemd_service
+      == qbittorrent_identifier + '.service'
+
+- name: Fail if qBittorrent namespace-owner service is missing from the resolved bound services
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_systemd_binds_to_services_list must contain
+      qbittorrent_container_network_container_systemd_service in
+      container-network mode. Do not override the resolved list in a way that
+      removes the namespace-owner lifecycle dependency.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_systemd_service
+      not in qbittorrent_systemd_binds_to_services_list
+
+- name: Fail if a qBittorrent bound systemd service name is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_systemd_binds_to_services_list contains an unsafe service name
+      (`{{ item }}`). Every entry must be a safely formed `.service` unit name
+      and must not refer to qBittorrent itself.
+  when:
+    - >-
+      item | string is not match('^[A-Za-z0-9][A-Za-z0-9:_.@-]*[.]service$')
+      or item == qbittorrent_identifier + '.service'
+  loop: "{{ qbittorrent_systemd_binds_to_services_list }}"
+
+- name: Fail if qBittorrent Traefik network is not defined in container-network mode
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_labels_traefik_docker_network must identify a network
+      attached to the namespace owner when Traefik labels are enabled in
+      container-network mode.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - qbittorrent_container_labels_traefik_enabled | bool
+    - qbittorrent_container_labels_traefik_docker_network | string | length == 0
+
+- name: Fail if qBittorrent namespace-owner timing settings are invalid
+  ansible.builtin.fail:
+    msg: >-
+      {{ item }} must be an integer greater than or equal to 1.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - lookup('vars', item) | string is not match('^[0-9]+$')
+      or lookup('vars', item) | int < 1
+  loop:
+    - qbittorrent_container_network_container_healthcheck_retries
+    - qbittorrent_container_network_container_healthcheck_retry_delay_seconds
+    - qbittorrent_container_network_container_systemd_start_timeout_margin_seconds
+    - qbittorrent_container_network_container_systemd_start_timeout_seconds
+    - qbittorrent_container_stop_grace_time_seconds
+
+- name: Fail if qBittorrent container-network systemd startup timeout is below its work budget
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container_systemd_start_timeout_seconds must
+      cover namespace-owner health-check retries and the configured cleanup/create
+      margin.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_systemd_start_timeout_seconds | int
+      <
+      (
+        (qbittorrent_container_network_container_healthcheck_retries | int)
+        *
+        (qbittorrent_container_network_container_healthcheck_retry_delay_seconds | int)
+      )
+      +
+      (qbittorrent_container_stop_grace_time_seconds | int)
+      +
+      (qbittorrent_container_network_container_systemd_start_timeout_margin_seconds | int)
+
+- name: Fail if qBittorrent container-network mode has a host-control volume
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_additional_volumes must not expose Docker sockets,
+      the host root, /proc, /sys, or /dev to qBittorrent in container-network
+      mode (`{{ item.src | default('') }}` -> `{{ item.dst | default('') }}`).
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      item.src | default('') | string
+      is match('^/(?:$|run/?$|var/?$|var/run/?$|var/lib/?$|var/lib/docker(?:/|$)|proc(?:/|$)|sys(?:/|$)|dev(?:/|$))')
+      or
+      item.src | default('') | string
+      is search('(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)')
+      or
+      item.dst | default('') | string
+      is match('^/(?:$|run/?$|var/?$|var/run/?$|var/lib/?$|var/lib/docker(?:/|$)|proc(?:/|$)|sys(?:/|$)|dev(?:/|$))')
+      or
+      item.dst | default('') | string
+      is search('(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)')
+  loop: "{{ qbittorrent_container_additional_volumes }}"
+
+- name: Fail if a qBittorrent container-network bind source is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      Every bind source in qbittorrent_container_additional_volumes must be an
+      absolute host path without `.` or `..` path segments in container-network
+      mode (`{{ item.src | default('') }}`).
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      (
+        item.type
+        | default(
+          'bind'
+          if '/' in (item.src | default('') | string)
+          else 'volume'
+        )
+      )
+      == 'bind'
+    - >-
+      item.src | default('') | string is not match('^/')
+      or
+      item.src | default('') | string is search('(?:^|/)[.]{1,2}(?:/|$)')
+  loop: "{{ qbittorrent_container_additional_volumes }}"
+
+- name: Fail if a qBittorrent container-network volume destination is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      Every qbittorrent_container_additional_volumes destination must be an
+      absolute container path without `.` or `..` path segments in
+      container-network mode (`{{ item.dst | default('') }}`).
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      item.dst | default('') | string is not match('^/')
+      or
+      item.dst | default('') | string is search('(?:^|/)[.]{1,2}(?:/|$)')
+  loop: "{{ qbittorrent_container_additional_volumes }}"
+
+- name: Fail if an additional volume replaces the enforced qBittorrent resolver
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_additional_volumes must not target
+      /etc/resolv.conf in container-network mode. Configure the enforced
+      read-only resolver source through
+      qbittorrent_container_network_container_resolv_conf_path instead
+      (`{{ item.src | default('') }}` -> `{{ item.dst | default('') }}`).
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      item.dst | default('') | string
+      is match('^/+etc/+resolv[.]conf/*$')
+  loop: "{{ qbittorrent_container_additional_volumes }}"
+
+- name: Fail if qBittorrent container-network mode conflicts with independently managed container settings
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_mode is `container`, so `{{ item.name }}` must
+      be {{ item.expected }}. The namespace owner is responsible for hostname,
+      published ports, and managed networks, while arbitrary Docker arguments are
+      rejected to prevent bypassing the declared network mode.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - item.conflicts | bool
+  loop:
+    - name: qbittorrent_container_hostname
+      conflicts: "{{ qbittorrent_container_hostname | string | length > 0 }}"
+      expected: empty
+    - name: qbittorrent_container_network
+      conflicts: "{{ qbittorrent_container_network | string | length > 0 }}"
+      expected: empty
+    - name: qbittorrent_container_network_deletion_enabled
+      conflicts: "{{ qbittorrent_container_network_deletion_enabled | bool }}"
+      expected: "false"
+    - name: qbittorrent_container_http_host_bind_port
+      conflicts: "{{ qbittorrent_container_http_host_bind_port | string | length > 0 }}"
+      expected: empty
+    - name: qbittorrent_container_torrenting_host_bind_port
+      conflicts: "{{ qbittorrent_container_torrenting_host_bind_port | string | length > 0 }}"
+      expected: empty
+    - name: qbittorrent_container_additional_networks
+      conflicts: "{{ qbittorrent_container_additional_networks | length > 0 }}"
+      expected: an empty list
+    - name: qbittorrent_container_extra_arguments
+      conflicts: "{{ qbittorrent_container_extra_arguments | length > 0 }}"
+      expected: an empty list
 
 - name: Fail if qBittorrent architecture is not supported
   ansible.builtin.fail:

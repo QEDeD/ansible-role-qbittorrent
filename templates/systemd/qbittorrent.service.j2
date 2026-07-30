@@ -1,12 +1,21 @@
 {#
 SPDX-FileCopyrightText: 2025 Slavi Pantaleev
 SPDX-FileCopyrightText: 2025 spatterlight
+SPDX-FileCopyrightText: 2026 MASH project contributors
 
 SPDX-License-Identifier: AGPL-3.0-or-later
 #}
 
 [Unit]
 Description=qBittorrent ({{ qbittorrent_identifier }})
+{% if qbittorrent_container_network_mode == 'container' %}
+# MASH-NetworkNamespaceOwner={{ qbittorrent_container_network_container }}
+# MASH-NetworkNamespaceIdentity=resolved-full-container-id
+{% endif %}
+{% for service in qbittorrent_systemd_binds_to_services_list %}
+BindsTo={{ service }}
+After={{ service }}
+{% endfor %}
 {% for service in qbittorrent_systemd_required_services_list %}
 Requires={{ service }}
 After={{ service }}
@@ -18,8 +27,17 @@ Wants={{ service }}
 [Service]
 Type=simple
 Environment="HOME={{ devture_systemd_docker_base_systemd_unit_home_path }}"
+{% if qbittorrent_container_network_mode == 'container' %}
+TimeoutStartSec={{ qbittorrent_container_network_container_systemd_start_timeout_seconds }}
+RuntimeDirectory={{ qbittorrent_identifier }}-container-network
+RuntimeDirectoryMode=0700
+ExecStartPre={{ (devture_systemd_docker_base_systemd_path ~ '/' ~ qbittorrent_identifier ~ '-container-network-helper') | quote }} cleanup
+ExecStartPre={{ (devture_systemd_docker_base_systemd_path ~ '/' ~ qbittorrent_identifier ~ '-container-network-helper') | quote }} prepare
+{% else %}
 ExecStartPre={{ devture_systemd_docker_base_host_command_sh }} -c '{{ qbittorrent_container_cleanup_command | trim | replace("\n", " ") }}'
+{% endif %}
 
+{% if qbittorrent_container_network_mode == 'managed' %}
 ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} create \
       --rm \
       --name={{ qbittorrent_identifier }} \
@@ -60,11 +78,18 @@ ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} create \
 {% for network in qbittorrent_container_additional_networks %}
 ExecStartPre={{ devture_systemd_docker_base_host_command_docker }} network connect {{ network }} {{ qbittorrent_identifier }}
 {% endfor %}
+{% endif %}
 
+{% if qbittorrent_container_network_mode == 'managed' %}
 ExecStart={{ devture_systemd_docker_base_host_command_docker }} start --attach {{ qbittorrent_identifier }}
 
 ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} stop -t {{ qbittorrent_container_stop_grace_time_seconds }} {{ qbittorrent_identifier }} 2>/dev/null || true'
 ExecStop=-{{ devture_systemd_docker_base_host_command_sh }} -c '{{ devture_systemd_docker_base_host_command_docker }} rm {{ qbittorrent_identifier }} 2>/dev/null || true'
+{% else %}
+ExecStart={{ (devture_systemd_docker_base_systemd_path ~ '/' ~ qbittorrent_identifier ~ '-container-network-helper') | quote }} start
+ExecStop={{ (devture_systemd_docker_base_systemd_path ~ '/' ~ qbittorrent_identifier ~ '-container-network-helper') | quote }} cleanup
+ExecStopPost={{ (devture_systemd_docker_base_systemd_path ~ '/' ~ qbittorrent_identifier ~ '-container-network-helper') | quote }} cleanup
+{% endif %}
 
 Restart=always
 RestartSec=30
