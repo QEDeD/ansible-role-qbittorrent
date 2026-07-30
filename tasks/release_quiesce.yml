@@ -48,9 +48,27 @@
       not been removed.
 
 - name: Release the persistent qBittorrent quiesce transactionally
-  when: qbittorrent_quiesce_applied | default(false) | bool
+  when: >-
+    qbittorrent_quiesce_applied | default(false) | bool
+    or
+    qbittorrent_quiesce_release_final_unit_expected
+    | default(false)
+    | bool
+    or
+    qbittorrent_quiesce_release_removed_unit_expected
+    | default(false)
+    | bool
   block:
+    - name: Verify fragment absence before releasing an uninstall marker
+      when:
+        qbittorrent_quiesce_release_removed_unit_expected
+        | default(false)
+        | bool
+      ansible.builtin.include_tasks: >-
+        {{ role_path }}/tasks/verify_removed_fragment_before_release.yml
+
     - name: Remove only the persistent qBittorrent quiesce drop-in
+      when: qbittorrent_quiesce_applied | default(false) | bool
       ansible.builtin.file:
         path: >-
           /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
@@ -62,7 +80,10 @@
         argv:
           - "{{ qbittorrent_systemd_systemctl_command }}"
           - daemon-reload
-      changed_when: qbittorrent_quiesce_dropin_removal_result.changed | bool
+      changed_when: >-
+        qbittorrent_quiesce_dropin_removal_result.changed
+        | default(false)
+        | bool
 
     - name: Verify the effective finalized qBittorrent unit
       when:
@@ -71,6 +92,14 @@
         | bool
       ansible.builtin.include_tasks: >-
         {{ role_path }}/tasks/verify_final_unit.yml
+
+    - name: Verify qBittorrent unit removal without claiming effective quiescing
+      when:
+        qbittorrent_quiesce_release_removed_unit_expected
+        | default(false)
+        | bool
+      ansible.builtin.include_tasks: >-
+        {{ role_path }}/tasks/verify_removed_unit.yml
 
     - name: Reset qBittorrent start-limit and failed state after finalization
       when:
@@ -85,23 +114,23 @@
       changed_when: false
 
   rescue:
-    - name: Restore the persistent qBittorrent quiesce after release failure
-      ansible.builtin.template:
-        src: "{{ role_path }}/templates/systemd/qbittorrent-quiesce.conf.j2"
-        dest: >-
-          /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
-        mode: "0644"
-        owner: root
-        group: root
+    - name: Revalidate qBittorrent ownership before final-unit rescue
+      when:
+        qbittorrent_quiesce_release_final_unit_expected
+        | default(false)
+        | bool
+      ansible.builtin.include_tasks: >-
+        {{ role_path }}/tasks/validate_uninstall.yml
 
-    - name: Reload systemd after restoring qBittorrent quiescing
-      ansible.builtin.command:
-        argv:
-          - "{{ qbittorrent_systemd_systemctl_command }}"
-          - daemon-reload
-      changed_when: true
+    - name: Fully isolate qBittorrent after final-unit release failure
+      when:
+        qbittorrent_quiesce_release_final_unit_expected
+        | default(false)
+        | bool
+      ansible.builtin.include_tasks: >-
+        {{ role_path }}/tasks/quiesce.yml
 
-    - name: Verify restored qBittorrent quiescing when a final unit was expected
+    - name: Verify the restored effective qBittorrent fail-closed guard
       when:
         qbittorrent_quiesce_release_final_unit_expected
         | default(false)
@@ -109,9 +138,68 @@
       ansible.builtin.include_tasks: >-
         {{ role_path }}/tasks/verify_quiesce_unit.yml
 
+    - name: Restore only the qBittorrent uninstall retry marker
+      when:
+        qbittorrent_quiesce_release_removed_unit_expected
+        | default(false)
+        | bool
+      block:
+        - name: Inspect the persistent qBittorrent drop-in directory before restoration
+          ansible.builtin.stat:
+            path: "/etc/systemd/system/{{ qbittorrent_identifier }}.service.d"
+            follow: false
+          register: qbittorrent_quiesce_restore_directory_stat
+
+        - name: Require a safe qBittorrent drop-in directory before restoration
+          when: qbittorrent_quiesce_restore_directory_stat.stat.exists | bool
+          ansible.builtin.assert:
+            that:
+              - qbittorrent_quiesce_restore_directory_stat.stat.isdir | bool
+              - >-
+                not
+                qbittorrent_quiesce_restore_directory_stat.stat.islnk
+                | default(false)
+                | bool
+            fail_msg: >-
+              The persistent qBittorrent drop-in directory became unsafe while
+              restoring the role-owned lifecycle marker.
+
+        - name: Ensure the persistent qBittorrent drop-in directory for restoration
+          ansible.builtin.file:
+            path: "/etc/systemd/system/{{ qbittorrent_identifier }}.service.d"
+            state: directory
+            mode: "0755"
+            owner: root
+            group: root
+
+        - name: Restore the role-owned qBittorrent uninstall retry marker
+          ansible.builtin.template:
+            src: "{{ role_path }}/templates/systemd/qbittorrent-quiesce.conf.j2"
+            dest: >-
+              /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+            mode: "0644"
+            owner: root
+            group: root
+
+        - name: Reload systemd after restoring the qBittorrent uninstall marker
+          ansible.builtin.command:
+            argv:
+              - "{{ qbittorrent_systemd_systemctl_command }}"
+              - daemon-reload
+          changed_when: true
+
     - name: Report the failed qBittorrent quiesce release
       ansible.builtin.fail:
         msg: >-
-          The persistent qBittorrent quiesce could not be released and verified
-          safely. The role restored the fail-closed guard; rerun after
-          diagnosing the finalized unit.
+          The qBittorrent lifecycle release could not be verified safely.
+          {% if qbittorrent_quiesce_release_final_unit_expected | default(false) | bool %}
+          The role safely captured any exact-name container, required ownership
+          before acting on it, restored the effective guard, proved the unit
+          inactive with no queued job or process IDs, and proved the captured
+          container ID when present and the stable name absent.
+          {% else %}
+          The role did not recreate the qBittorrent unit or container. It
+          restored the owned drop-in only as a durable retry marker; it is not
+          an effective guard without a validated, loaded role unit.
+          {% endif %}
+          Rerun after diagnosing the systemd state.

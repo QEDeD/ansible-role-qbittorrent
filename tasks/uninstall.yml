@@ -285,6 +285,7 @@
   ansible.builtin.include_tasks: "{{ role_path }}/tasks/release_quiesce.yml"
   vars:
     qbittorrent_quiesce_release_final_unit_expected: false
+    qbittorrent_quiesce_release_removed_unit_expected: true
 
 - name: Ensure qBittorrent local data path does not exist if empty
   ansible.builtin.command:

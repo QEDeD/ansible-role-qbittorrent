@@ -170,6 +170,16 @@ configuration, not a VPN-runtime failure. The fail-closed transition begins
 only after validation succeeds and the installation task reaches its migration
 gate.
 
+Before any lifecycle mutation, the role correlates the recognized on-disk unit
+with systemd's effective `FragmentPath`. A loaded unit is accepted only when
+that path is exactly the configured role fragment. If systemd reports the unit
+as not found, the effective path must be empty and the unit must also be
+inactive, job-free, and have no main or control process. Foreign vendor,
+transient, stale-active, and unexpected effective drop-in configurations
+therefore fail validation without being stopped or overwritten. The effective
+drop-in set must be empty or contain exactly the reserved guard after its disk
+object and ownership marker have been validated.
+
 Both `managed` (direct bridge) to `container` and `container` to `managed`
 transitions use a persistent systemd quiesce. Before stopping anything, the
 role places this guard at
@@ -197,11 +207,22 @@ limitation.
 The final target unit is rendered while the quiesce remains installed. The role
 then removes the guard, reloads systemd, and verifies the effective
 mode-specific start and stop lifecycle exactly. If release or verification
-fails normally, it restores and re-verifies the guard. A later task failure
-after completed quiescing therefore leaves qBittorrent stopped and absent, with
-config and downloads untouched. A later run recognizes and adopts the reserved
-role-owned guard, including when the main unit was already removed, and retries
-the requested transition. After abrupt controller or host interruption, rerun
+fails, the role revalidates the current unit identity and repeats the full
+quiesce transaction before claiming fail-closed recovery. That recovery claim
+requires the unit to be inactive with no job or process IDs and requires the
+captured container ID, when present, and stable name to be absent. If a loaded
+role unit cannot be validated, including during a failed fresh installation,
+the run fails without describing a drop-in alone as effective isolation. A
+later task failure after completed quiescing therefore leaves qBittorrent
+stopped and absent, with config and downloads untouched. A later run recognizes
+and adopts the reserved role-owned guard, including when the main unit was
+already removed, and retries the requested transition. If interruption occurs
+after the guard is unlinked but before systemd reloads, a rerun recognizes the
+exact cached reserved path separately from disk ownership. Recovery requires
+the unit to be inactive, job-free, process-free, and exact-name-container-free;
+a loaded unit must also retain the exact quiesce contract and intended role
+fragment. The loaded recovery path repeats full quiescing and recreates the
+guard before convergence. After abrupt controller or host interruption, rerun
 the role and verify the effective unit state rather than inferring which
 individual lifecycle operation completed.
 
@@ -213,9 +234,15 @@ Uninstall performs the same independent control-plane checks: it applies the
 systemd quiesce, removes only a captured full ID authorized by the ownership
 label or semantic legacy check, proves the unit inactive and both the captured
 ID and stable name absent, and only then removes the unit and root-owned helper.
-A later replacement is never a cleanup target. Config, downloads, and any
-unlabelled or foreign managed network retain the role's non-destructive
-behavior.
+A later replacement is never a cleanup target. Before releasing the owned
+drop-in, the role proves that no lower-priority or foreign same-name systemd
+fragment emerged. After release and reload it requires `LoadState=not-found`
+with empty effective fragment and drop-in paths, an inactive state, no queued
+job, and zero main and control process IDs. If that release cannot be attested,
+the owned drop-in may be restored as a durable retry marker. With no validated,
+loaded unit it is not described or verified as an effective guard. Config,
+downloads, and any unlabelled or foreign managed network retain the role's
+non-destructive behavior.
 
 To roll back, restore `qbittorrent_container_network_mode: managed`, remove the
 namespace-owner setting and bound owner service, restore any desired managed

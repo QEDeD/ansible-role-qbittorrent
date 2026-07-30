@@ -1,0 +1,121 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Inspect qBittorrent lifecycle files after removal
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - >-
+      {{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service
+    - >-
+      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+  register: qbittorrent_removed_unit_file_stats
+
+- name: Inspect the removed qBittorrent load state
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=LoadState
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_unit_load_state_result
+  changed_when: false
+
+- name: Inspect the removed qBittorrent fragment path
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=FragmentPath
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_unit_fragment_path_result
+  changed_when: false
+
+- name: Inspect the removed qBittorrent drop-in paths
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=DropInPaths
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_unit_dropin_paths_result
+  changed_when: false
+
+- name: Inspect the removed qBittorrent active state
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ActiveState
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_unit_active_state_result
+  changed_when: false
+
+- name: Inspect any queued job for the removed qBittorrent unit
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=Job
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_unit_job_result
+  changed_when: false
+
+- name: Inspect process identities for the removed qBittorrent unit
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=MainPID
+      - --property=ControlPID
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_unit_process_ids_result
+  changed_when: false
+
+- name: Prove the qBittorrent unit and persistent quiesce are fully removed
+  ansible.builtin.assert:
+    that:
+      - >-
+        qbittorrent_removed_unit_file_stats.results
+        | selectattr('stat.exists')
+        | list
+        | length
+        == 0
+      - qbittorrent_removed_unit_load_state_result.stdout | trim == 'not-found'
+      - >-
+        qbittorrent_removed_unit_fragment_path_result.stdout
+        | trim
+        | length
+        == 0
+      - >-
+        qbittorrent_removed_unit_dropin_paths_result.stdout
+        | trim
+        | length
+        == 0
+      - >-
+        qbittorrent_removed_unit_active_state_result.stdout
+        | trim
+        in ['inactive', 'failed', 'unknown']
+      - >-
+        qbittorrent_removed_unit_job_result.stdout
+        | trim
+        in ['', '0', '[0 /]']
+      - >-
+        qbittorrent_removed_unit_process_ids_result.stdout_lines
+        | reject('equalto', '')
+        | difference(['0'])
+        | length
+        == 0
+    fail_msg: >-
+      qBittorrent removal did not leave both disk and effective systemd state
+      empty, inactive, job-free, and process-free. No effective quiesce claim
+      is made for an absent unit.

@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Inspect the intended qBittorrent fragment before releasing its marker
+  ansible.builtin.stat:
+    path: >-
+      {{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service
+    follow: false
+  register: qbittorrent_removed_fragment_pre_release_stat
+
+- name: Inspect the qBittorrent load state before releasing its marker
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=LoadState
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_fragment_pre_release_load_state_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent fragment before releasing its marker
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=FragmentPath
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_removed_fragment_pre_release_path_result
+  changed_when: false
+
+- name: Prove no qBittorrent fragment emerged before marker release
+  ansible.builtin.assert:
+    that:
+      - not qbittorrent_removed_fragment_pre_release_stat.stat.exists | bool
+      - >-
+        qbittorrent_removed_fragment_pre_release_load_state_result.stdout
+        | trim
+        == 'not-found'
+      - >-
+        qbittorrent_removed_fragment_pre_release_path_result.stdout
+        | trim
+        | length
+        == 0
+    fail_msg: >-
+      The intended qBittorrent fragment was not removed or another effective
+      same-name fragment emerged from a different systemd search path. The
+      role-owned retry marker has not been released.

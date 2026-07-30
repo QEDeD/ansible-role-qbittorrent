@@ -75,6 +75,17 @@
   register: qbittorrent_final_manual_start_policy_result
   changed_when: false
 
+- name: Inspect the finalized qBittorrent manual-stop policy
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=RefuseManualStop
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_manual_stop_policy_result
+  changed_when: false
+
 - name: Inspect the finalized qBittorrent drop-in paths
   ansible.builtin.command:
     argv:
@@ -203,8 +214,6 @@
           else ' --attach ' + qbittorrent_identifier
         )
       }}
-    qbittorrent_final_quiesce_dropin_path: >-
-      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
   ansible.builtin.assert:
     that:
       - qbittorrent_final_load_state_result.stdout | trim == 'loaded'
@@ -212,9 +221,8 @@
       - qbittorrent_final_service_type_result.stdout | trim == 'simple'
       - qbittorrent_final_restart_policy_result.stdout | trim == 'always'
       - qbittorrent_final_manual_start_policy_result.stdout | trim == 'no'
-      - >-
-        qbittorrent_final_quiesce_dropin_path
-        not in qbittorrent_final_dropin_paths_result.stdout.split()
+      - qbittorrent_final_manual_stop_policy_result.stdout | trim == 'no'
+      - qbittorrent_final_dropin_paths_result.stdout | trim | length == 0
       - >-
         (
           qbittorrent_final_pre_start_commands_result.stdout

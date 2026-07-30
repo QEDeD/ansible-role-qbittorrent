@@ -308,3 +308,283 @@
     fail_msg: >-
       The existing qBittorrent container-network helper is not recognizable as
       role-owned. It will not be overwritten or deleted.
+
+- name: Query the effective qBittorrent unit before lifecycle mutation
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=LoadState
+      - --property=FragmentPath
+      - --property=DropInPaths
+      - --property=ActiveState
+      - --property=Job
+      - --property=MainPID
+      - --property=ControlPID
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_pre_mutation_unit_state_result
+  changed_when: false
+  failed_when: false
+
+- name: Require complete effective qBittorrent state before lifecycle mutation
+  vars:
+    qbittorrent_pre_mutation_property_names:
+      - LoadState
+      - FragmentPath
+      - DropInPaths
+      - ActiveState
+      - Job
+      - MainPID
+      - ControlPID
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_pre_mutation_unit_state_result.rc == 0
+      - >-
+        (
+          qbittorrent_pre_mutation_unit_state_result.stdout_lines
+          | select('match', '^' + item + '=')
+          | list
+          | length
+        )
+        == 1
+    fail_msg: >-
+      The effective qBittorrent systemd identity or runtime state could not be
+      queried unambiguously. No lifecycle mutation has been applied.
+  loop: "{{ qbittorrent_pre_mutation_property_names }}"
+
+- name: Classify a diskless cached qBittorrent quiesce guard
+  vars:
+    qbittorrent_cached_guard_path: >-
+      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+    qbittorrent_effective_dropin_paths: >-
+      {{
+        (
+          qbittorrent_pre_mutation_unit_state_result.stdout_lines
+          | select('match', '^DropInPaths=')
+          | first
+          | regex_replace('^DropInPaths=', '')
+        ).split()
+      }}
+  ansible.builtin.set_fact:
+    qbittorrent_existing_quiesce_cached_guard_candidate: >-
+      {{
+        not qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool
+        and qbittorrent_effective_dropin_paths
+        == [qbittorrent_cached_guard_path]
+      }}
+    qbittorrent_existing_quiesce_cached_guard_safe: false
+
+- name: Verify the loaded lifecycle of a diskless cached qBittorrent guard
+  when:
+    - qbittorrent_existing_quiesce_cached_guard_candidate | bool
+    - >-
+      (
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^LoadState=')
+        | first
+        | regex_replace('^LoadState=', '')
+      )
+      == 'loaded'
+  ansible.builtin.include_tasks: >-
+    {{ role_path }}/tasks/verify_quiesce_unit.yml
+
+- name: Query exact-name container state for a diskless cached qBittorrent guard
+  when: qbittorrent_existing_quiesce_cached_guard_candidate | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+      - "--format={{ '{{' }}.ID{{ '}}' }}"
+  register: qbittorrent_cached_guard_container_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Prove a diskless cached qBittorrent guard is safe to recover
+  when: qbittorrent_existing_quiesce_cached_guard_candidate | bool
+  vars:
+    qbittorrent_cached_guard_expected_fragment_path: >-
+      {{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service
+    qbittorrent_cached_guard_load_state: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^LoadState=')
+        | first
+        | regex_replace('^LoadState=', '')
+      }}
+    qbittorrent_cached_guard_fragment_path: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^FragmentPath=')
+        | first
+        | regex_replace('^FragmentPath=', '')
+      }}
+    qbittorrent_cached_guard_active_state: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^ActiveState=')
+        | first
+        | regex_replace('^ActiveState=', '')
+      }}
+    qbittorrent_cached_guard_job: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^Job=')
+        | first
+        | regex_replace('^Job=', '')
+      }}
+    qbittorrent_cached_guard_process_ids: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^(MainPID|ControlPID)=')
+        | map('regex_replace', '^(MainPID|ControlPID)=', '')
+        | list
+      }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          qbittorrent_cached_guard_load_state == 'loaded'
+          and
+          qbittorrent_cached_guard_fragment_path
+          == qbittorrent_cached_guard_expected_fragment_path
+        )
+        or
+        (
+          qbittorrent_cached_guard_load_state == 'not-found'
+          and qbittorrent_cached_guard_fragment_path | length == 0
+        )
+      - >-
+        qbittorrent_cached_guard_active_state
+        in ['inactive', 'failed', 'unknown']
+      - qbittorrent_cached_guard_job in ['', '0', '[0 /]']
+      - >-
+        qbittorrent_cached_guard_process_ids
+        | difference(['0'])
+        | length
+        == 0
+      - qbittorrent_cached_guard_container_query_result.rc == 0
+      - >-
+        qbittorrent_cached_guard_container_query_result.stdout
+        | trim
+        | length
+        == 0
+    fail_msg: >-
+      The reserved qBittorrent guard is cached by systemd but absent on disk,
+      and its inactive, process-free, container-free recovery state could not
+      be proven. It has not been adopted or recreated.
+
+- name: Record a safely recoverable diskless cached qBittorrent guard
+  when: qbittorrent_existing_quiesce_cached_guard_candidate | bool
+  ansible.builtin.set_fact:
+    qbittorrent_existing_quiesce_cached_guard_safe: true
+
+- name: Prove effective qBittorrent unit ownership before lifecycle mutation
+  vars:
+    qbittorrent_pre_mutation_expected_fragment_path: >-
+      {{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service
+    qbittorrent_pre_mutation_load_state: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^LoadState=')
+        | first
+        | regex_replace('^LoadState=', '')
+      }}
+    qbittorrent_pre_mutation_fragment_path: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^FragmentPath=')
+        | first
+        | regex_replace('^FragmentPath=', '')
+      }}
+    qbittorrent_pre_mutation_dropin_paths: >-
+      {{
+        (
+          qbittorrent_pre_mutation_unit_state_result.stdout_lines
+          | select('match', '^DropInPaths=')
+          | first
+          | regex_replace('^DropInPaths=', '')
+        ).split()
+      }}
+    qbittorrent_pre_mutation_owned_guard_path: >-
+      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+    qbittorrent_pre_mutation_active_state: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^ActiveState=')
+        | first
+        | regex_replace('^ActiveState=', '')
+      }}
+    qbittorrent_pre_mutation_job: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^Job=')
+        | first
+        | regex_replace('^Job=', '')
+      }}
+    qbittorrent_pre_mutation_main_pid: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^MainPID=')
+        | first
+        | regex_replace('^MainPID=', '')
+      }}
+    qbittorrent_pre_mutation_control_pid: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^ControlPID=')
+        | first
+        | regex_replace('^ControlPID=', '')
+      }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        qbittorrent_pre_mutation_dropin_paths | length == 0
+        or
+        (
+          qbittorrent_existing_quiesce_dropin_owned
+          | default(false)
+          | bool
+          and
+          qbittorrent_pre_mutation_dropin_paths
+          == [qbittorrent_pre_mutation_owned_guard_path]
+        )
+        or
+        (
+          qbittorrent_existing_quiesce_cached_guard_safe
+          | default(false)
+          | bool
+          and
+          qbittorrent_pre_mutation_dropin_paths
+          == [qbittorrent_pre_mutation_owned_guard_path]
+        )
+      - >-
+        (
+          qbittorrent_existing_unit_stat.stat.exists | bool
+          and qbittorrent_pre_mutation_load_state == 'loaded'
+          and
+          qbittorrent_pre_mutation_fragment_path
+          == qbittorrent_pre_mutation_expected_fragment_path
+        )
+        or
+        (
+          qbittorrent_pre_mutation_load_state == 'not-found'
+          and qbittorrent_pre_mutation_fragment_path | length == 0
+          and
+          qbittorrent_pre_mutation_active_state
+          in ['inactive', 'failed', 'unknown']
+          and qbittorrent_pre_mutation_job in ['', '0', '[0 /]']
+          and qbittorrent_pre_mutation_main_pid == '0'
+          and qbittorrent_pre_mutation_control_pid == '0'
+        )
+    fail_msg: >-
+      The effective same-name qBittorrent unit or drop-in set is foreign,
+      transient, or stale-active. Only the recognized role fragment at
+      `{{ qbittorrent_pre_mutation_expected_fragment_path }}` with no drop-ins
+      or the disk-attested role guard, a separately proven safe cached reserved
+      guard, or an inert not-found state with no job or process IDs, may precede
+      lifecycle mutation.

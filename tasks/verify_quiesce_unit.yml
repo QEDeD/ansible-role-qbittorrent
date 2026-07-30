@@ -59,6 +59,17 @@
   register: qbittorrent_quiesce_manual_start_policy_result
   changed_when: false
 
+- name: Inspect the effective qBittorrent manual-stop policy
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=RefuseManualStop
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_manual_stop_policy_result
+  changed_when: false
+
 - name: Inspect the effective qBittorrent drop-in paths
   ansible.builtin.command:
     argv:
@@ -122,8 +133,12 @@
         | trim
         == 'yes'
       - >-
-        qbittorrent_quiesce_dropin_path
-        in qbittorrent_quiesce_dropin_paths_result.stdout.split()
+        qbittorrent_quiesce_manual_stop_policy_result.stdout
+        | trim
+        == 'no'
+      - >-
+        qbittorrent_quiesce_dropin_paths_result.stdout.split()
+        == [qbittorrent_quiesce_dropin_path]
       - >-
         (
           qbittorrent_quiesce_start_command_result.stdout
