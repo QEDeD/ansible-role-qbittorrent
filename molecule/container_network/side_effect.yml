@@ -95,6 +95,109 @@
         name: qbittorrent.service
         state: started
 
+    - name: Stop qBittorrent before simulating a pre-v1 container
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: stopped
+
+    - name: Create a pre-v1 qBittorrent in the correct owner namespace
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - create
+          - --name
+          - qbittorrent
+          - --label
+          - io.mash.qbittorrent.owner=qbittorrent
+          - --network
+          - container:qbittorrent-synthetic-owner
+          - "{{ qbittorrent_synthetic_owner_image }}"
+          - sleep
+          - infinity
+      register: qbittorrent_test_pre_v1_create_result
+      changed_when: true
+
+    - name: Start the pre-v1 qBittorrent container
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - start
+          - "{{ qbittorrent_test_pre_v1_create_result.stdout | trim }}"
+      changed_when: true
+
+    - name: Initialize pre-v1 invalid-target evidence
+      ansible.builtin.set_fact:
+        qbittorrent_test_pre_v1_invalid_target_rejected: false
+
+    - name: Attempt an invalid target with a running pre-v1 qBittorrent
+      block:
+        - name: Apply an invalid target over the pre-v1 container
+          ansible.builtin.include_role:
+            name: "{{ qbittorrent_test_role_name }}"
+            public: false
+          vars:
+            qbittorrent_container_http_host_bind_port: "18080"
+
+        - name: Fail if the pre-v1 invalid target was accepted
+          ansible.builtin.fail:
+            msg: The deliberately invalid pre-v1 target was accepted.
+      rescue:
+        - name: Record rejection of the pre-v1 invalid target
+          ansible.builtin.set_fact:
+            qbittorrent_test_pre_v1_invalid_target_rejected: true
+
+    - name: Query qBittorrent after the rejected pre-v1 transition
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - name=^/qbittorrent$
+      register: qbittorrent_test_pre_v1_container_query
+      changed_when: false
+
+    - name: Query systemd after the rejected pre-v1 transition
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_test_pre_v1_unit_state
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect the pre-v1 transition guard
+      ansible.builtin.stat:
+        path: "{{ qbittorrent_test_quiesce_path }}"
+        follow: false
+      register: qbittorrent_test_pre_v1_quiesce_stat
+
+    - name: Assert the pre-v1 invalid target left qBittorrent isolated
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_test_pre_v1_invalid_target_rejected | bool
+          - >-
+            qbittorrent_test_pre_v1_unit_state.stdout
+            | trim
+            in ['inactive', 'failed', 'unknown']
+          - qbittorrent_test_pre_v1_container_query.stdout | trim | length == 0
+          - qbittorrent_test_pre_v1_quiesce_stat.stat.isreg | bool
+
+    - name: Recover the valid container-network configuration after pre-v1 rejection
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        public: false
+
+    - name: Start qBittorrent after pre-v1 recovery
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: started
+
     - name: Switch qBittorrent from container to managed networking
       ansible.builtin.include_role:
         name: "{{ qbittorrent_test_role_name }}"
@@ -148,6 +251,310 @@
             == qbittorrent_test_managed_network
           - not qbittorrent_test_managed_artifact_stats.results[0].stat.exists | bool
           - not qbittorrent_test_managed_artifact_stats.results[1].stat.exists | bool
+
+    - name: Initialize rejected direct-to-container transition evidence
+      ansible.builtin.set_fact:
+        qbittorrent_test_invalid_transition_rejected: false
+
+    - name: Attempt a conflicting direct-to-container transition
+      block:
+        - name: Apply an invalid container-network target
+          ansible.builtin.include_role:
+            name: "{{ qbittorrent_test_role_name }}"
+            public: false
+          vars:
+            qbittorrent_container_network_mode: container
+            qbittorrent_container_network_container: qbittorrent-synthetic-owner
+            qbittorrent_container_network_container_contract_label: >-
+              io.mash.test.fail-closed-contract
+            qbittorrent_container_network_container_contract_label_value: >-
+              synthetic-v1
+            qbittorrent_container_network_container_systemd_service: >-
+              qbittorrent-synthetic-owner.service
+            qbittorrent_container_network_container_resolv_conf_path: >-
+              /opt/qbittorrent-synthetic-owner/resolv.conf
+            qbittorrent_container_hostname: ""
+            qbittorrent_container_network: ""
+            qbittorrent_container_network_deletion_enabled: false
+            qbittorrent_container_fail_closed_contract_label_value: invalid-v2
+            qbittorrent_container_http_host_bind_port: "18080"
+            qbittorrent_container_torrenting_host_bind_port: ""
+            qbittorrent_container_additional_networks: []
+            qbittorrent_container_extra_arguments: []
+
+        - name: Fail if the conflicting transition was accepted
+          ansible.builtin.fail:
+            msg: >-
+              The deliberately conflicting container-network and contract
+              target was accepted.
+      rescue:
+        - name: Record rejection of the conflicting transition
+          ansible.builtin.set_fact:
+            qbittorrent_test_invalid_transition_rejected: true
+
+    - name: Query qBittorrent after the rejected transition
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - name=^/qbittorrent$
+      register: qbittorrent_test_invalid_transition_container_query
+      changed_when: false
+
+    - name: Query qBittorrent systemd after the rejected transition
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_test_invalid_transition_unit_state
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect the retained fail-closed transition guard
+      ansible.builtin.stat:
+        path: "{{ qbittorrent_test_quiesce_path }}"
+        follow: false
+      register: qbittorrent_test_invalid_transition_quiesce_stat
+
+    - name: Assert rejected VPN intent left qBittorrent isolated
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_test_invalid_transition_rejected | bool
+          - >-
+            qbittorrent_test_invalid_transition_unit_state.stdout
+            | trim
+            in ['inactive', 'failed', 'unknown']
+          - >-
+            qbittorrent_test_invalid_transition_container_query.stdout
+            | trim
+            | length
+            == 0
+          - qbittorrent_test_invalid_transition_quiesce_stat.stat.isreg | bool
+
+    - name: Recover qBittorrent in managed-network mode
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        public: false
+      vars:
+        qbittorrent_container_network_mode: managed
+        qbittorrent_container_network_container: ""
+        qbittorrent_container_network_container_contract_label: ""
+        qbittorrent_container_network_container_contract_label_value: ""
+        qbittorrent_container_network_container_systemd_service: ""
+        qbittorrent_container_network_container_resolv_conf_path: ""
+        qbittorrent_container_hostname: qbittorrent
+        qbittorrent_container_network: "{{ qbittorrent_test_managed_network }}"
+        qbittorrent_container_network_deletion_enabled: false
+        qbittorrent_container_http_host_bind_port: ""
+        qbittorrent_container_torrenting_host_bind_port: ""
+        qbittorrent_container_additional_networks: []
+        qbittorrent_container_extra_arguments: []
+
+    - name: Start qBittorrent after managed-network recovery
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: started
+
+    - name: Initialize invalid network-deletion transition evidence
+      ansible.builtin.set_fact:
+        qbittorrent_test_invalid_deletion_transition_rejected: false
+
+    - name: Attempt a container transition with network deletion enabled
+      block:
+        - name: Apply the invalid network-deletion target
+          ansible.builtin.include_role:
+            name: "{{ qbittorrent_test_role_name }}"
+            public: false
+          vars:
+            qbittorrent_container_network_mode: container
+            qbittorrent_container_network_container: qbittorrent-synthetic-owner
+            qbittorrent_container_network_container_contract_label: >-
+              io.mash.test.fail-closed-contract
+            qbittorrent_container_network_container_contract_label_value: >-
+              synthetic-v1
+            qbittorrent_container_network_container_systemd_service: >-
+              qbittorrent-synthetic-owner.service
+            qbittorrent_container_network_container_resolv_conf_path: >-
+              /opt/qbittorrent-synthetic-owner/resolv.conf
+            qbittorrent_container_hostname: ""
+            qbittorrent_container_network: ""
+            qbittorrent_container_network_deletion_enabled: true
+            qbittorrent_container_http_host_bind_port: ""
+            qbittorrent_container_torrenting_host_bind_port: ""
+            qbittorrent_container_additional_networks: []
+            qbittorrent_container_extra_arguments: []
+
+        - name: Fail if the invalid network-deletion target was accepted
+          ansible.builtin.fail:
+            msg: The invalid container-network deletion target was accepted.
+      rescue:
+        - name: Record rejection of the invalid network-deletion target
+          ansible.builtin.set_fact:
+            qbittorrent_test_invalid_deletion_transition_rejected: true
+
+    - name: Query qBittorrent after network-deletion rejection
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - name=^/qbittorrent$
+      register: qbittorrent_test_invalid_deletion_container_query
+      changed_when: false
+
+    - name: Query systemd after network-deletion rejection
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_test_invalid_deletion_unit_state
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect the network-deletion transition guard
+      ansible.builtin.stat:
+        path: "{{ qbittorrent_test_quiesce_path }}"
+        follow: false
+      register: qbittorrent_test_invalid_deletion_quiesce_stat
+
+    - name: Assert network-deletion rejection left qBittorrent isolated
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_test_invalid_deletion_transition_rejected | bool
+          - >-
+            qbittorrent_test_invalid_deletion_unit_state.stdout
+            | trim
+            in ['inactive', 'failed', 'unknown']
+          - >-
+            qbittorrent_test_invalid_deletion_container_query.stdout
+            | trim
+            | length
+            == 0
+          - qbittorrent_test_invalid_deletion_quiesce_stat.stat.isreg | bool
+
+    - name: Recover managed networking before enforcement-conflict testing
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        public: false
+      vars:
+        qbittorrent_container_network_mode: managed
+        qbittorrent_container_network_container: ""
+        qbittorrent_container_network_container_contract_label: ""
+        qbittorrent_container_network_container_contract_label_value: ""
+        qbittorrent_container_network_container_systemd_service: ""
+        qbittorrent_container_network_container_resolv_conf_path: ""
+        qbittorrent_container_hostname: qbittorrent
+        qbittorrent_container_network: "{{ qbittorrent_test_managed_network }}"
+        qbittorrent_container_network_deletion_enabled: false
+        qbittorrent_container_http_host_bind_port: ""
+        qbittorrent_container_torrenting_host_bind_port: ""
+        qbittorrent_container_additional_networks: []
+        qbittorrent_container_extra_arguments: []
+
+    - name: Start qBittorrent before enforcement-conflict testing
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: started
+
+    - name: Initialize enforced-intent conflict evidence
+      ansible.builtin.set_fact:
+        qbittorrent_test_enforced_intent_conflict_rejected: false
+
+    - name: Attempt direct networking under enforced VPN intent
+      block:
+        - name: Apply contradictory direct networking under VPN intent
+          ansible.builtin.include_role:
+            name: "{{ qbittorrent_test_role_name }}"
+            public: false
+          vars:
+            qbittorrent_container_network_mode: managed
+            qbittorrent_container_network_container: ""
+            qbittorrent_container_network_container_contract_label: ""
+            qbittorrent_container_network_container_contract_label_value: ""
+            qbittorrent_container_network_container_systemd_service: ""
+            qbittorrent_container_network_container_resolv_conf_path: ""
+            qbittorrent_container_hostname: qbittorrent
+            qbittorrent_container_network: "{{ qbittorrent_test_managed_network }}"
+            qbittorrent_container_network_deletion_enabled: false
+            qbittorrent_container_http_host_bind_port: ""
+            qbittorrent_container_torrenting_host_bind_port: ""
+            qbittorrent_container_additional_networks: []
+            qbittorrent_container_extra_arguments: []
+            qbittorrent_container_network_enforcement_enabled: true
+            qbittorrent_container_network_enforcement_intent: true
+            qbittorrent_container_network_enforcement_owner_enabled: true
+            qbittorrent_container_network_enforcement_expected_owner_container: >-
+              qbittorrent-synthetic-owner
+            qbittorrent_container_network_enforcement_expected_owner_systemd_service: >-
+              qbittorrent-synthetic-owner.service
+            qbittorrent_container_network_enforcement_expected_resolv_conf_path: >-
+              /opt/qbittorrent-synthetic-owner/resolv.conf
+            qbittorrent_container_network_enforcement_expected_owner_contract_label: >-
+              io.mash.test.fail-closed-contract
+            qbittorrent_container_network_enforcement_expected_owner_contract_label_value: >-
+              synthetic-v1
+            qbittorrent_container_network_enforcement_expected_traefik_network: ""
+
+        - name: Fail if contradictory enforced intent was accepted
+          ansible.builtin.fail:
+            msg: Direct networking was accepted under enforced VPN intent.
+      rescue:
+        - name: Record rejection of contradictory enforced intent
+          ansible.builtin.set_fact:
+            qbittorrent_test_enforced_intent_conflict_rejected: true
+
+    - name: Query qBittorrent after enforced-intent rejection
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - name=^/qbittorrent$
+      register: qbittorrent_test_enforced_intent_container_query
+      changed_when: false
+
+    - name: Query systemd after enforced-intent rejection
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_test_enforced_intent_unit_state
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect the enforced-intent transition guard
+      ansible.builtin.stat:
+        path: "{{ qbittorrent_test_quiesce_path }}"
+        follow: false
+      register: qbittorrent_test_enforced_intent_quiesce_stat
+
+    - name: Assert enforced-intent rejection left qBittorrent isolated
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_test_enforced_intent_conflict_rejected | bool
+          - >-
+            qbittorrent_test_enforced_intent_unit_state.stdout
+            | trim
+            in ['inactive', 'failed', 'unknown']
+          - >-
+            qbittorrent_test_enforced_intent_container_query.stdout
+            | trim
+            | length
+            == 0
+          - qbittorrent_test_enforced_intent_quiesce_stat.stat.isreg | bool
 
     - name: Switch qBittorrent back to container networking
       ansible.builtin.include_role:

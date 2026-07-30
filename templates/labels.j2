@@ -1,5 +1,6 @@
 {#
 SPDX-FileCopyrightText: 2025 spatterlight
+SPDX-FileCopyrightText: 2026 MASH project contributors
 
 SPDX-License-Identifier: AGPL-3.0-or-later
 #}
@@ -51,3 +52,6 @@ traefik.http.services.{{ qbittorrent_identifier }}.loadbalancer.server.port={{ q
 {% endfor %}
 
 {{ qbittorrent_container_role_label }}={{ qbittorrent_container_role_label_value }}
+{% if qbittorrent_container_network_mode == 'container' %}
+{{ qbittorrent_container_fail_closed_contract_label }}={{ qbittorrent_container_fail_closed_contract_label_value }}
+{% endif %}

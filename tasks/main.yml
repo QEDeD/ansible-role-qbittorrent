@@ -13,10 +13,43 @@
     - install-all
     - install-qbittorrent
   block:
-    - name: Validate qBittorrent configuration
-      ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_config.yml"
     - name: Validate qBittorrent lifecycle mutation safety
       ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_uninstall.yml"
+    - name: Fail closed before validating a direct-to-container transition
+      when: >-
+        (
+          qbittorrent_container_network_mode == 'container'
+          or
+          (
+            qbittorrent_container_network_enforcement_enabled
+            | default(false)
+            | bool
+            and
+            qbittorrent_container_network_enforcement_intent
+            | default(false)
+            | bool
+          )
+        )
+        and
+        (
+          qbittorrent_existing_quiesce_dropin_owned | default(false) | bool
+          or
+          qbittorrent_existing_quiesce_cached_guard_safe | default(false) | bool
+          or
+          (
+            qbittorrent_existing_unit_stat.stat.exists | bool
+            and
+            (
+              not
+              qbittorrent_existing_container_fail_closed_contract_valid
+              | default(false)
+              | bool
+            )
+          )
+        )
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/quiesce.yml"
+    - name: Validate qBittorrent configuration
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_config.yml"
     - name: Install qBittorrent
       ansible.builtin.include_tasks: "{{ role_path }}/tasks/install.yml"
 

@@ -7,26 +7,30 @@
 ---
 - name: Quiesce qBittorrent before a network-mode or legacy-unit transition
   when: >-
-    qbittorrent_existing_quiesce_dropin_owned | default(false) | bool
-    or
-    qbittorrent_existing_quiesce_cached_guard_safe | default(false) | bool
-    or
+    not qbittorrent_quiesce_applied | default(false) | bool
+    and
     (
-      qbittorrent_existing_unit_stat.stat.exists | bool
-      and
+      qbittorrent_existing_quiesce_dropin_owned | default(false) | bool
+      or
+      qbittorrent_existing_quiesce_cached_guard_safe | default(false) | bool
+      or
       (
+        qbittorrent_existing_unit_stat.stat.exists | bool
+        and
         (
-          qbittorrent_container_network_mode == 'container'
-          and
           (
-            not qbittorrent_existing_unit_has_role_marker | bool
-            or not qbittorrent_existing_unit_uses_container_network | bool
+            qbittorrent_container_network_mode == 'container'
+            and
+            (
+              not qbittorrent_existing_unit_has_role_marker | bool
+              or not qbittorrent_existing_unit_uses_container_network | bool
+            )
           )
-        )
-        or
-        (
-          qbittorrent_container_network_mode == 'managed'
-          and qbittorrent_existing_unit_uses_container_network | bool
+          or
+          (
+            qbittorrent_container_network_mode == 'managed'
+            and qbittorrent_existing_unit_uses_container_network | bool
+          )
         )
       )
     )
@@ -250,7 +254,7 @@
       - "{{ devture_systemd_docker_base_host_command_docker }}"
       - container
       - inspect
-      - "--format={{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.HostConfig.NetworkMode{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}|{{ '{{' }}index .Config.Labels \"{{ qbittorrent_container_role_label }}\"{{ '}}' }}"
+      - "--format={{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.HostConfig.NetworkMode{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}|{{ '{{' }}index .Config.Labels \"{{ qbittorrent_container_role_label }}\"{{ '}}' }}|{{ '{{' }}index .Config.Labels \"{{ qbittorrent_container_fail_closed_contract_label }}\"{{ '}}' }}"
       - "{{ qbittorrent_container_network_migration_qbittorrent_id }}"
   register: qbittorrent_container_network_migration_qbittorrent_identity_result
   changed_when: false
@@ -271,7 +275,7 @@
           | split('|')
           | length
         )
-        == 5
+        == 6
         and
         (
           qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
@@ -308,8 +312,7 @@
             qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
             | trim
             | split('|')
-            | last
-          )
+          )[4]
           == qbittorrent_identifier
           or
           (
@@ -319,6 +322,14 @@
             == qbittorrent_container_network_migration_qbittorrent_id
           )
         )
+        and
+        (
+          qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
+          | trim
+          | split('|')
+          | last
+        )
+        == qbittorrent_container_fail_closed_contract_label_value
       }}
     qbittorrent_container_network_migration_qbittorrent_owned: >-
       {{
@@ -330,7 +341,7 @@
           | split('|')
           | length
         )
-        == 5
+        == 6
         and
         (
           qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
@@ -352,8 +363,7 @@
             qbittorrent_container_network_migration_qbittorrent_identity_result.stdout
             | trim
             | split('|')
-            | last
-          )
+          )[4]
           == qbittorrent_identifier
           or
           (
@@ -380,7 +390,7 @@
             | split('|')
             | length
           )
-          == 5
+          == 6
         else ''
       }}
     qbittorrent_container_network_migration_current_running: >-
@@ -400,7 +410,7 @@
             | split('|')
             | length
           )
-          == 5
+          == 6
         else false
       }}
 
@@ -594,6 +604,7 @@
     content: |
       #!/bin/sh
       # MASH-Role=qBittorrent-container-network-helper
+      # MASH-FailClosedContract=v1
       set -eu
 
       docker_command={{ devture_systemd_docker_base_host_command_docker | quote }}
@@ -603,6 +614,7 @@
       qbittorrent_name={{ qbittorrent_identifier | quote }}
       qbittorrent_name_filter={{ ('name=^/' ~ (qbittorrent_identifier | replace('.', '[.]')) ~ '$') | quote }}
       qbittorrent_role_label_value={{ qbittorrent_container_role_label_value | quote }}
+      qbittorrent_fail_closed_contract_label_value={{ qbittorrent_container_fail_closed_contract_label_value | quote }}
       health_retries={{ qbittorrent_container_network_container_healthcheck_retries | string | quote }}
       health_retry_delay={{ qbittorrent_container_network_container_healthcheck_retry_delay_seconds | string | quote }}
       stop_grace_time={{ qbittorrent_container_stop_grace_time_seconds | string | quote }}
@@ -680,7 +692,7 @@
         expected_qbittorrent_id=$1
         identity=$(
           "$docker_command" container inspect \
-            --format='{{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}index .Config.Labels "{{ qbittorrent_container_role_label }}"{{ '}}' }}' \
+            --format='{{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}index .Config.Labels "{{ qbittorrent_container_role_label }}"{{ '}}' }}|{{ '{{' }}index .Config.Labels "{{ qbittorrent_container_fail_closed_contract_label }}"{{ '}}' }}' \
             "$expected_qbittorrent_id"
         ) || return 1
 
@@ -688,14 +700,17 @@
         identity_remainder=${identity#*|}
         [ "$identity_remainder" != "$identity" ] || return 1
         candidate_name=${identity_remainder%%|*}
-        candidate_role_label_value=${identity_remainder#*|}
-        [ "$candidate_role_label_value" != "$identity_remainder" ] || return 1
-        case "$candidate_role_label_value" in
+        identity_remainder=${identity_remainder#*|}
+        candidate_role_label_value=${identity_remainder%%|*}
+        candidate_fail_closed_contract_label_value=${identity_remainder#*|}
+        [ "$candidate_fail_closed_contract_label_value" != "$identity_remainder" ] || return 1
+        case "$candidate_fail_closed_contract_label_value" in
           *'|'*) return 1 ;;
         esac
         [ "$candidate_id" = "$expected_qbittorrent_id" ] || return 1
         [ "$candidate_name" = "/$qbittorrent_name" ] || return 1
         [ "$candidate_role_label_value" = "$qbittorrent_role_label_value" ] || return 1
+        [ "$candidate_fail_closed_contract_label_value" = "$qbittorrent_fail_closed_contract_label_value" ] || return 1
       }
 
       qbittorrent_identity_has_neutral_proxy_environment() {
@@ -732,7 +747,7 @@
         expected_owner_id=$2
         identity=$(
           "$docker_command" container inspect \
-            --format='{{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.HostConfig.NetworkMode{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}|{{ '{{' }}index .Config.Labels "{{ qbittorrent_container_role_label }}"{{ '}}' }}' \
+            --format='{{ '{{' }}.Id{{ '}}' }}|{{ '{{' }}.Name{{ '}}' }}|{{ '{{' }}.HostConfig.NetworkMode{{ '}}' }}|{{ '{{' }}.State.Running{{ '}}' }}|{{ '{{' }}index .Config.Labels "{{ qbittorrent_container_role_label }}"{{ '}}' }}|{{ '{{' }}index .Config.Labels "{{ qbittorrent_container_fail_closed_contract_label }}"{{ '}}' }}' \
             "$expected_qbittorrent_id"
         ) || return 1
 
@@ -744,9 +759,11 @@
         candidate_network_mode=${identity_remainder%%|*}
         identity_remainder=${identity_remainder#*|}
         candidate_running=${identity_remainder%%|*}
-        candidate_role_label_value=${identity_remainder#*|}
-        [ "$candidate_role_label_value" != "$identity_remainder" ] || return 1
-        case "$candidate_role_label_value" in
+        identity_remainder=${identity_remainder#*|}
+        candidate_role_label_value=${identity_remainder%%|*}
+        candidate_fail_closed_contract_label_value=${identity_remainder#*|}
+        [ "$candidate_fail_closed_contract_label_value" != "$identity_remainder" ] || return 1
+        case "$candidate_fail_closed_contract_label_value" in
           *'|'*) return 1 ;;
         esac
         [ "$candidate_id" = "$expected_qbittorrent_id" ] || return 1
@@ -754,6 +771,7 @@
         [ "$candidate_network_mode" = "container:$expected_owner_id" ] || return 1
         [ "$candidate_running" = false ] || return 1
         [ "$candidate_role_label_value" = "$qbittorrent_role_label_value" ] || return 1
+        [ "$candidate_fail_closed_contract_label_value" = "$qbittorrent_fail_closed_contract_label_value" ] || return 1
         qbittorrent_identity_has_neutral_proxy_environment \
           "$expected_qbittorrent_id"
       }

@@ -72,10 +72,22 @@ the following settings to be empty or disabled:
 - `qbittorrent_container_additional_networks`
 - `qbittorrent_container_extra_arguments`
 
+A parent playbook which exposes a higher-level VPN switch can also enable the
+role's `qbittorrent_container_network_enforcement_*` contract as role
+parameters. This makes the higher-level switch authoritative: VPN intent
+requires the exact enabled owner, service, resolver, owner-contract label,
+Traefik network, and container-only settings; direct intent rejects stale
+owner coupling. The install path uses enforced VPN intent to enter quiescing
+even if a higher-precedence inventory variable contradicts the derived network
+mode, so the contradiction is reported only after a recognized direct
+qBittorrent has been isolated. Ordinary standalone use leaves this integration
+contract disabled.
+
 The defaults for hostname, managed network, and network deletion adjust
-automatically when the mode changes. Labels and additional volumes remain
-available, allowing a reverse proxy to discover the service. Container mode
-requires `qbittorrent_container_network_container_resolv_conf_path`, an
+automatically when the mode changes. Labels remain available, allowing a
+reverse proxy to discover the service, but arbitrary environment variables and
+additional volumes are rejected. Container mode requires
+`qbittorrent_container_network_container_resolv_conf_path`, an
 absolute path to resolver configuration supplied by the namespace owner. Point
 it at the owner's VPN-scoped resolver configuration, not the host's general
 resolver. The helper mounts this file read-only at `/etc/resolv.conf`;
@@ -87,7 +99,24 @@ namespace owner is not running, so the role does not require it during
 installation.
 The qBittorrent container still drops all capabilities before adding only its
 existing file-permission capabilities; it does not receive `NET_ADMIN` or
-`NET_RAW`.
+`NET_RAW`. Container mode requires
+`qbittorrent_environment_variables_additional_variables` and
+`qbittorrent_container_additional_volumes` to be empty. Arbitrary environment
+and mount extension points cannot be proven free of VPN credentials,
+nonstandard control sockets, or independent proxy paths.
+
+Every role-created container in `container` mode also carries
+`io.mash.qbittorrent.fail-closed-contract=v1`. The lifecycle helper requires
+both this contract label and the ordinary role-ownership label before it treats
+an existing container as safe to reuse or remove. The version identifies the
+immutable container settings that enforce the current contract: exact
+owner-ID namespace binding, no published ports or additional networks, no
+arbitrary environment or mounts, neutral proxy variables, restricted
+capabilities, non-root execution, and the read-only filesystem. Any future
+change to that security contract must increment the version so an older
+container is isolated and recreated instead of being accepted as current.
+Managed/direct-network containers intentionally do not carry this contract
+label; they retain only the ordinary ownership label.
 
 When Traefik labels are enabled, explicitly set
 `qbittorrent_container_labels_traefik_docker_network` to a network attached to
@@ -99,10 +128,9 @@ mounts are also rejected. The resolver source has the same source-path
 restrictions. Additional mount destinations must be absolute and cannot contain
 `.` or `..` path segments or control characters. They cannot shadow `/config`,
 `/etc`, `/run`, `/proc`, `/sys`, `/dev`, or overlap the configured download
-mount. Additional bind sources have the same canonical absolute-path
-requirement and are resolved before rendering to reject current symlink
-traversal; named-volume sources remain supported. Ordinary application-data
-mounts remain supported.
+mount. The path validation remains defensive for managed mode and for
+configuration transitions, but additional mounts are rejected outright in
+container mode.
 
 The primary config and download sources receive the same fail-closed path
 checks. They cannot point at `/run`, container-engine state or sockets, or
@@ -163,12 +191,20 @@ when role-driven network deletion is enabled.
 
 ### Switching modes and rollback
 
-Configuration validation runs before installation or migration. If a requested
-VPN configuration is invalid, the role makes no isolation change and the
-currently deployed mode may remain running. This is a rejected target
-configuration, not a VPN-runtime failure. The fail-closed transition begins
-only after validation succeeds and the installation task reaches its migration
-gate.
+The role first validates only the identity, ownership, systemd, and command
+properties needed to mutate the selected lifecycle safely. Once `container`
+intent is unambiguous, a recognized existing direct-network or pre-contract
+unit is quiesced before the remaining target configuration is validated. A
+later target validation failure therefore leaves that qBittorrent unit inert
+and its container absent. An existing container-network unit may remain
+running only when its live container and installed helper pass the complete
+v1 fail-closed attestation; otherwise it is quiesced before target validation.
+
+If the identifier, effective unit, ownership evidence, reserved drop-in, or
+command path cannot be authenticated safely, the role does not guess a
+mutation target and fails before stopping anything. That ownership-safety
+boundary is distinct from a rejected VPN target after the selected service has
+been identified.
 
 Before any lifecycle mutation, the role correlates the recognized on-disk unit
 with systemd's effective `FragmentPath`. A loaded unit is accepted only when

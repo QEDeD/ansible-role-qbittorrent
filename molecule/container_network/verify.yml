@@ -11,6 +11,8 @@
     qbittorrent_synthetic_owner_name: qbittorrent-synthetic-owner
     qbittorrent_synthetic_owner_contract_label: io.mash.test.fail-closed-contract
     qbittorrent_synthetic_owner_contract_value: synthetic-v1
+    qbittorrent_fail_closed_contract_label: io.mash.qbittorrent.fail-closed-contract
+    qbittorrent_fail_closed_contract_value: v1
   tasks:
     - name: Wait for qBittorrent to become active through the owner's Wants relationship
       ansible.builtin.command:
@@ -41,7 +43,7 @@
           - /usr/bin/docker
           - container
           - inspect
-          - "--format={% raw %}{{.Id}}|{{.Name}}|{{.HostConfig.NetworkMode}}|{{index .Config.Labels \"io.mash.qbittorrent.owner\"}}{% endraw %}"
+          - "--format={% raw %}{{.Id}}|{{.Name}}|{{.HostConfig.NetworkMode}}|{{index .Config.Labels \"io.mash.qbittorrent.owner\"}}|{{index .Config.Labels \"io.mash.qbittorrent.fail-closed-contract\"}}{% endraw %}"
           - qbittorrent
       register: qbittorrent_container_network_initial_inspect
       changed_when: false
@@ -59,11 +61,12 @@
           - qbittorrent_synthetic_owner_initial_fields[1] == '/' + qbittorrent_synthetic_owner_name
           - qbittorrent_synthetic_owner_initial_fields[2] == 'healthy'
           - qbittorrent_synthetic_owner_initial_fields[3] == qbittorrent_synthetic_owner_contract_value
-          - qbittorrent_container_network_initial_fields | length == 4
+          - qbittorrent_container_network_initial_fields | length == 5
           - qbittorrent_container_network_initial_fields[0] is match('^[a-f0-9]{64}$')
           - qbittorrent_container_network_initial_fields[1] == '/qbittorrent'
           - qbittorrent_container_network_initial_fields[2] == 'container:' + qbittorrent_synthetic_owner_initial_fields[0]
           - qbittorrent_container_network_initial_fields[3] == 'qbittorrent'
+          - qbittorrent_container_network_initial_fields[4] == qbittorrent_fail_closed_contract_value
 
     - name: Inspect qBittorrent's complete synthetic container contract
       ansible.builtin.command:
@@ -84,6 +87,13 @@
           {{ qbittorrent_container_network_initial_contract.HostConfig }}
         qbittorrent_container_network_initial_mounts: >-
           {{ qbittorrent_container_network_initial_contract.Mounts }}
+        qbittorrent_container_network_initial_mount_destinations: >-
+          {{
+            qbittorrent_container_network_initial_mounts
+            | map(attribute='Destination')
+            | list
+            | sort
+          }}
         qbittorrent_container_network_initial_proxy_environment: >-
           {{
             qbittorrent_container_network_initial_contract.Config.Env
@@ -105,11 +115,81 @@
             | length
             == 0
           - not qbittorrent_container_network_initial_host_config.PublishAllPorts | bool
+          - not qbittorrent_container_network_initial_host_config.Privileged | bool
+          - qbittorrent_container_network_initial_host_config.AutoRemove | bool
+          - qbittorrent_container_network_initial_host_config.ReadonlyRootfs | bool
+          - qbittorrent_container_network_initial_contract.Config.User == '1000:1000'
+          - >-
+            qbittorrent_container_network_initial_host_config.CapDrop
+            | default([], true)
+            | map('upper')
+            | list
+            | sort
+            == ['ALL']
+          - >-
+            qbittorrent_container_network_initial_host_config.CapAdd
+            | default([], true)
+            | map('upper')
+            | list
+            | sort
+            ==
+            ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID']
+            | sort
           - >-
             qbittorrent_container_network_initial_host_config.CapAdd
             | intersect(['NET_ADMIN', 'NET_RAW'])
             | length
             == 0
+          - >-
+            qbittorrent_container_network_initial_host_config.Devices
+            | default([], true)
+            | length
+            == 0
+          - >-
+            qbittorrent_container_network_initial_host_config.DeviceRequests
+            | default([], true)
+            | length
+            == 0
+          - >-
+            qbittorrent_container_network_initial_host_config.Links
+            | default([], true)
+            | length
+            == 0
+          - >-
+            qbittorrent_container_network_initial_host_config.Tmpfs
+            | default({}, true)
+            | list
+            == ['/run']
+          - qbittorrent_container_network_initial_mounts | length == 3
+          - >-
+            qbittorrent_container_network_initial_mount_destinations
+            ==
+            ['/config', '/downloads', '/etc/resolv.conf']
+            | sort
+          - >-
+            qbittorrent_container_network_initial_mounts
+            | selectattr('Destination', 'equalto', '/config')
+            | selectattr('Type', 'equalto', 'bind')
+            | selectattr('RW', 'equalto', true)
+            | list
+            | length
+            == 1
+          - >-
+            qbittorrent_container_network_initial_mounts
+            | selectattr('Destination', 'equalto', '/downloads')
+            | selectattr('Type', 'equalto', 'bind')
+            | selectattr('RW', 'equalto', true)
+            | list
+            | length
+            == 1
+          - >-
+            qbittorrent_container_network_initial_mounts
+            | selectattr('Destination', 'equalto', '/etc/resolv.conf')
+            | selectattr('Type', 'equalto', 'bind')
+            | rejectattr('RW')
+            | list
+            | length
+            == 1
           - >-
             qbittorrent_container_network_initial_mounts
             | map(attribute='Source')
@@ -123,6 +203,11 @@
             | list
             | length
             == 0
+          - >-
+            qbittorrent_container_network_initial_contract.Config.Labels[
+              qbittorrent_fail_closed_contract_label
+            ]
+            == qbittorrent_fail_closed_contract_value
           - >-
             qbittorrent_container_network_initial_proxy_environment | sort
             ==
@@ -370,6 +455,62 @@
       ansible.builtin.systemd_service:
         name: qbittorrent-synthetic-owner.service
         state: stopped
+
+    - name: Create a contractless container with the qBittorrent role label
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - create
+          - --name
+          - qbittorrent
+          - --label
+          - io.mash.qbittorrent.owner=qbittorrent
+          - "{{ qbittorrent_synthetic_owner_image }}"
+          - sleep
+          - infinity
+      register: qbittorrent_contractless_replacement_create_result
+      changed_when: true
+
+    - name: Invoke helper cleanup against the contractless replacement
+      ansible.builtin.command:
+        argv:
+          - /etc/systemd/system/qbittorrent-container-network-helper
+          - cleanup
+      register: qbittorrent_contractless_replacement_cleanup_result
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect the captured contractless replacement ID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.Id}}|{{.Name}}|{{index .Config.Labels \"io.mash.qbittorrent.owner\"}}|{{index .Config.Labels \"io.mash.qbittorrent.fail-closed-contract\"}}{% endraw %}"
+          - "{{ qbittorrent_contractless_replacement_create_result.stdout | trim }}"
+      register: qbittorrent_contractless_replacement_inspect
+      changed_when: false
+
+    - name: Assert helper cleanup retained the contractless replacement
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_contractless_replacement_cleanup_result.rc != 0
+          - >-
+            qbittorrent_contractless_replacement_inspect.stdout | trim
+            ==
+            (qbittorrent_contractless_replacement_create_result.stdout | trim)
+            + '|/qbittorrent|qbittorrent|<no value>'
+
+    - name: Remove only the captured contractless replacement ID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - rm
+          - --force
+          - "{{ qbittorrent_contractless_replacement_create_result.stdout | trim }}"
+      changed_when: true
 
     - name: Create an untracked container with the stable qBittorrent name
       ansible.builtin.command:

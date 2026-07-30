@@ -49,6 +49,22 @@ qbittorrent_container_image_registry_prefix_upstream_default: lscr.io/
 # - `container`: the container joins the network namespace of `qbittorrent_container_network_container`
 qbittorrent_container_network_mode: managed
 
+# Optional integration-level enforcement contract. A parent playbook can set
+# this to true and pass its independently derived VPN intent and namespace-owner
+# values as role parameters. The role then quiesces before rejecting any
+# contradictory effective target configuration. Standalone role users retain
+# the ordinary `qbittorrent_container_network_mode` interface by default.
+qbittorrent_container_network_enforcement_enabled: false
+qbittorrent_container_network_enforcement_intent: false
+qbittorrent_container_network_enforcement_owner_enabled: false
+qbittorrent_container_network_enforcement_expected_owner_container: ""
+qbittorrent_container_network_enforcement_expected_owner_systemd_service: ""
+qbittorrent_container_network_enforcement_expected_resolv_conf_path: ""
+qbittorrent_container_network_enforcement_expected_owner_contract_label: ""
+qbittorrent_container_network_enforcement_expected_owner_contract_label_value: ""
+qbittorrent_container_network_enforcement_expected_traefik_labels_enabled: false
+qbittorrent_container_network_enforcement_expected_traefik_network: ""
+
 # Stable exact Docker name used to discover the container whose network
 # namespace qBittorrent joins in `container` mode. IDs are not accepted here;
 # the lifecycle helper resolves and validates the current full ID at runtime.
@@ -144,6 +160,8 @@ qbittorrent_container_additional_networks_custom: []
 # if you wish to mount your own files into the container.
 # Contains definition objects like this: `{"type": "bind", "src": "/outside", "dst": "/inside", "options": "readonly"}.
 # See the `--mount` documentation for the `docker run` command.
+# In `container` network mode, this complete list must be empty. Arbitrary
+# mounts cannot be proven free of nonstandard control sockets or credentials.
 qbittorrent_container_additional_volumes: "{{ qbittorrent_container_additional_volumes_auto + qbittorrent_container_additional_volumes_custom }}"
 qbittorrent_container_additional_volumes_auto: []
 qbittorrent_container_additional_volumes_custom: []
@@ -183,6 +201,9 @@ qbittorrent_container_labels_additional_labels_custom: []
 # prevents either value from being overridden, and labels.j2 renders it last.
 qbittorrent_container_role_label: io.mash.qbittorrent.owner
 qbittorrent_container_role_label_value: "{{ qbittorrent_identifier }}"
+qbittorrent_container_fail_closed_contract_label: >-
+  io.mash.qbittorrent.fail-closed-contract
+qbittorrent_container_fail_closed_contract_label_value: v1
 
 # Specify the size of the container's tmpfs volume
 qbittorrent_container_tmpfs_run_size: 128m

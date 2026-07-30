@@ -40,6 +40,79 @@
       but it is set to `{{ qbittorrent_container_network_mode }}`.
   when: qbittorrent_container_network_mode not in ['managed', 'container']
 
+- name: Validate an enforced qBittorrent network-policy contract
+  when: qbittorrent_container_network_enforcement_enabled | bool
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_container_network_enforcement_intent is boolean
+      - qbittorrent_container_network_enforcement_owner_enabled is boolean
+      - >-
+        (
+          qbittorrent_container_network_enforcement_intent | bool
+          and qbittorrent_container_network_enforcement_owner_enabled | bool
+          and qbittorrent_container_network_mode == 'container'
+          and
+          qbittorrent_container_network_container
+          ==
+          qbittorrent_container_network_enforcement_expected_owner_container
+          and
+          qbittorrent_container_network_container_systemd_service
+          ==
+          qbittorrent_container_network_enforcement_expected_owner_systemd_service
+          and
+          qbittorrent_container_network_container_resolv_conf_path
+          ==
+          qbittorrent_container_network_enforcement_expected_resolv_conf_path
+          and
+          qbittorrent_container_network_container_contract_label
+          ==
+          qbittorrent_container_network_enforcement_expected_owner_contract_label
+          and
+          qbittorrent_container_network_container_contract_label_value
+          ==
+          qbittorrent_container_network_enforcement_expected_owner_contract_label_value
+          and qbittorrent_container_hostname | length == 0
+          and qbittorrent_container_network | length == 0
+          and not qbittorrent_container_network_deletion_enabled | bool
+          and qbittorrent_container_http_host_bind_port | length == 0
+          and qbittorrent_container_torrenting_host_bind_port | length == 0
+          and qbittorrent_container_additional_networks | length == 0
+          and qbittorrent_container_extra_arguments | length == 0
+          and
+          qbittorrent_container_labels_traefik_enabled | bool
+          ==
+          qbittorrent_container_network_enforcement_expected_traefik_labels_enabled
+          | bool
+          and
+          qbittorrent_container_labels_traefik_docker_network
+          ==
+          qbittorrent_container_network_enforcement_expected_traefik_network
+        )
+        or
+        (
+          not qbittorrent_container_network_enforcement_intent | bool
+          and not qbittorrent_container_network_enforcement_owner_enabled | bool
+          and qbittorrent_container_network_mode == 'managed'
+          and qbittorrent_container_network_container | length == 0
+          and
+          qbittorrent_container_network_container_systemd_service | length
+          == 0
+          and
+          qbittorrent_container_network_container_resolv_conf_path | length
+          == 0
+          and
+          qbittorrent_container_network_container_contract_label | length
+          == 0
+          and
+          qbittorrent_container_network_container_contract_label_value | length
+          == 0
+        )
+    fail_msg: >-
+      The effective qBittorrent network settings contradict the parent
+      playbook's enforced VPN intent. A VPN intent requires the exact enabled
+      namespace owner and container-mode coupling; a direct-network intent
+      rejects stale namespace-owner coupling.
+
 - name: Fail if qBittorrent identifier is not an unambiguous exact Docker name
   ansible.builtin.fail:
     msg: >-
@@ -281,13 +354,17 @@
 - name: Fail if fixed qBittorrent ownership metadata was overridden
   ansible.builtin.fail:
     msg: >-
-      qbittorrent_container_role_label and
-      qbittorrent_container_role_label_value are role-owned and cannot be
-      overridden.
+      qBittorrent ownership and fail-closed contract metadata are role-owned
+      and cannot be overridden.
   when:
     - >-
       qbittorrent_container_role_label != 'io.mash.qbittorrent.owner'
       or qbittorrent_container_role_label_value != qbittorrent_identifier
+      or
+      qbittorrent_container_fail_closed_contract_label
+      != 'io.mash.qbittorrent.fail-closed-contract'
+      or
+      qbittorrent_container_fail_closed_contract_label_value != 'v1'
 
 - name: Fail if an additional qBittorrent label is multiline
   ansible.builtin.fail:
@@ -296,16 +373,23 @@
     - item is not string or '\n' in item or '\r' in item
   loop: "{{ qbittorrent_container_labels_additional_labels }}"
 
-- name: Fail if an additional qBittorrent label overrides role ownership
+- name: Fail if an additional qBittorrent label overrides role metadata
   ansible.builtin.fail:
     msg: >-
-      qbittorrent_container_labels_additional_labels must not define the
-      role-owned `{{ qbittorrent_container_role_label }}` label.
+      qbittorrent_container_labels_additional_labels must not define either
+      role-owned ownership or fail-closed contract label.
   when:
     - >-
       item
       is match(
         '^' + (qbittorrent_container_role_label | regex_escape) + '='
+      )
+      or
+      item
+      is match(
+        '^'
+        + (qbittorrent_container_fail_closed_contract_label | regex_escape)
+        + '='
       )
   loop: "{{ qbittorrent_container_labels_additional_labels }}"
 
@@ -399,6 +483,28 @@
       (qbittorrent_container_stop_grace_time_seconds | int)
       +
       (qbittorrent_container_network_container_systemd_start_timeout_margin_seconds | int)
+
+- name: Reject qBittorrent extension points which can expose secrets or host control
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.assert:
+    that:
+      - >-
+        qbittorrent_environment_variables_additional_variables
+        | type_debug
+        == 'str'
+      - >-
+        qbittorrent_environment_variables_additional_variables
+        | trim
+        | length
+        == 0
+      - qbittorrent_container_additional_volumes | length == 0
+    fail_msg: >-
+      Container-network mode requires both
+      qbittorrent_environment_variables_additional_variables and
+      qbittorrent_container_additional_volumes to be empty. Arbitrary
+      environment or mount extension points cannot be proven free of VPN
+      credentials, proxy paths, or host-control sockets.
+  no_log: true
 
 - name: Fail if qBittorrent container-network mode has a host-control volume
   ansible.builtin.fail:

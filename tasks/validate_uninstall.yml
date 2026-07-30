@@ -8,9 +8,6 @@
     that:
       - qbittorrent_identifier is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
       - qbittorrent_identifier is not match('^[a-f0-9]+$')
-      - qbittorrent_container_network_mode in ['managed', 'container']
-      - qbittorrent_container_role_label == 'io.mash.qbittorrent.owner'
-      - qbittorrent_container_role_label_value == qbittorrent_identifier
       - >-
         qbittorrent_systemd_systemctl_command
         is match('^/[A-Za-z0-9_./-]+$')
@@ -27,23 +24,9 @@
       - >-
         devture_systemd_docker_base_systemd_path
         is match('^/(?:etc|run|usr/lib)/systemd/system$')
-      - >-
-        not qbittorrent_container_network_deletion_enabled | bool
-        or
-        (
-          qbittorrent_container_network_mode == 'managed'
-          and
-          qbittorrent_container_network
-          is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
-          and
-          qbittorrent_container_network is not match('^[a-f0-9]+$')
-        )
     fail_msg: >-
-      qBittorrent uninstall identity, command, systemd, ownership-label, or
-      managed-network settings are unsafe. Nothing has been stopped or removed.
-
-- name: Validate qBittorrent uninstall filesystem paths
-  ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_paths.yml"
+      qBittorrent lifecycle identity, command, or systemd settings are unsafe.
+      Nothing has been stopped or removed.
 
 - name: Check the existing qBittorrent unit before lifecycle mutation
   ansible.builtin.stat:
@@ -308,6 +291,20 @@
     fail_msg: >-
       The existing qBittorrent container-network helper is not recognizable as
       role-owned. It will not be overwritten or deleted.
+
+- name: Record the existing helper's fail-closed contract
+  ansible.builtin.set_fact:
+    qbittorrent_existing_helper_has_fail_closed_contract: >-
+      {{
+        qbittorrent_existing_container_network_helper_stat.stat.exists | bool
+        and
+        '# MASH-FailClosedContract=v1'
+        in (
+          qbittorrent_existing_container_network_helper_content.content
+          | default('')
+          | b64decode
+        ).splitlines()
+      }}
 
 - name: Query the effective qBittorrent unit before lifecycle mutation
   ansible.builtin.command:
@@ -588,3 +585,731 @@
       or the disk-attested role guard, a separately proven safe cached reserved
       guard, or an inert not-found state with no job or process IDs, may precede
       lifecycle mutation.
+
+- name: Classify the intended namespace-owner identity for early attestation
+  ansible.builtin.set_fact:
+    qbittorrent_existing_fail_closed_target_identity_valid: >-
+      {{
+        qbittorrent_container_network_mode == 'container'
+        and
+        qbittorrent_container_network_container
+        | string
+        is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+        and
+        qbittorrent_container_network_container
+        | string
+        is not match('^[a-f0-9]+$')
+        and
+        qbittorrent_container_network_container_contract_label
+        | string
+        is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+        and
+        qbittorrent_container_network_container_contract_label_value
+        | string
+        is match('^[^|\r\n]+$')
+        and
+        qbittorrent_container_network_container_systemd_service
+        | string
+        is match('^[A-Za-z0-9][A-Za-z0-9:_.@-]*[.]service$')
+        and
+        qbittorrent_container_network_container_systemd_service
+        != qbittorrent_identifier + '.service'
+        and qbittorrent_data_path | string is match('^/(?!/)[^,\r\n]+$')
+        and qbittorrent_download_path | string is match('^/(?!/)[^,\r\n]+$')
+        and
+        qbittorrent_container_network_container_resolv_conf_path
+        | string
+        is match('^/(?!/)[^,\r\n]+$')
+        and
+        qbittorrent_download_bind_path
+        | string
+        is match('^/(?!/)[^,\r\n]+$')
+        and
+        qbittorrent_data_path
+        | string
+        is not search('(?:^|/)[.]{1,2}(?:/|$)')
+        and
+        qbittorrent_download_path
+        | string
+        is not search('(?:^|/)[.]{1,2}(?:/|$)')
+        and
+        qbittorrent_container_network_container_resolv_conf_path
+        | string
+        is not search('(?:^|/)[.]{1,2}(?:/|$)')
+        and
+        qbittorrent_download_bind_path
+        | string
+        is not search('(?:^|/)[.]{1,2}(?:/|$)')
+        and
+        qbittorrent_data_path
+        | string
+        is not match('^/(?:$|boot(?:/|$)|dev(?:/|$)|etc(?:/|$)|proc(?:/|$)|root(?:/|$)|run(?:/|$)|sys(?:/|$)|var/?$|var/run(?:/|$)|var/lib/?$|var/lib/(?:docker|containers|containerd|podman)(?:/|$))')
+        and
+        qbittorrent_download_path
+        | string
+        is not match('^/(?:$|boot(?:/|$)|dev(?:/|$)|etc(?:/|$)|proc(?:/|$)|root(?:/|$)|run(?:/|$)|sys(?:/|$)|var/?$|var/run(?:/|$)|var/lib/?$|var/lib/(?:docker|containers|containerd|podman)(?:/|$))')
+        and
+        qbittorrent_container_network_container_resolv_conf_path
+        | string
+        is not match('^/(?:$|bin(?:/|$)|boot(?:/|$)|dev(?:/|$)|etc(?:/|$)|lib(?:32|64)?(?:/|$)|proc(?:/|$)|root(?:/|$)|run(?:/|$)|sbin(?:/|$)|sys(?:/|$)|usr(?:/|$)|var/?$|var/run(?:/|$)|var/lib/?$|var/lib/(?:docker|containers|containerd|podman)(?:/|$))')
+        and
+        qbittorrent_download_bind_path
+        | string
+        is not match('^/(?:$|config|dev|etc|proc|run|sys)(?:/|$)')
+        and
+        (
+          not qbittorrent_container_network_enforcement_enabled
+          | default(false)
+          | bool
+          or
+          (
+            qbittorrent_container_network_enforcement_intent
+            | default(false)
+            | bool
+            and
+            qbittorrent_container_network_enforcement_owner_enabled
+            | default(false)
+            | bool
+            and
+            qbittorrent_container_network_container
+            ==
+            qbittorrent_container_network_enforcement_expected_owner_container
+            and
+            qbittorrent_container_network_container_contract_label
+            ==
+            qbittorrent_container_network_enforcement_expected_owner_contract_label
+            and
+            qbittorrent_container_network_container_contract_label_value
+            ==
+            qbittorrent_container_network_enforcement_expected_owner_contract_label_value
+            and
+            qbittorrent_container_network_container_systemd_service
+            ==
+            qbittorrent_container_network_enforcement_expected_owner_systemd_service
+            and
+            qbittorrent_container_network_container_resolv_conf_path
+            ==
+            qbittorrent_container_network_enforcement_expected_resolv_conf_path
+          )
+        )
+      }}
+    qbittorrent_existing_fail_closed_owner_id: ""
+    qbittorrent_existing_fail_closed_owner_contract_valid: false
+    qbittorrent_existing_fail_closed_owner_systemd_contract_valid: false
+    qbittorrent_existing_fail_closed_owner_inspect: {}
+
+- name: Query the intended namespace-owner systemd contract
+  when:
+    - qbittorrent_existing_fail_closed_target_identity_valid | bool
+    - qbittorrent_existing_unit_stat.stat.exists | bool
+    - qbittorrent_existing_unit_uses_container_network | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=LoadState
+      - --property=FragmentPath
+      - --property=ActiveState
+      - --property=Job
+      - --property=MainPID
+      - "{{ qbittorrent_container_network_container_systemd_service }}"
+  register: qbittorrent_existing_fail_closed_owner_systemd_result
+  changed_when: false
+  failed_when: false
+
+- name: Attest the intended namespace-owner systemd contract
+  when:
+    - qbittorrent_existing_fail_closed_target_identity_valid | bool
+    - qbittorrent_existing_unit_stat.stat.exists | bool
+    - qbittorrent_existing_unit_uses_container_network | bool
+  vars:
+    qbittorrent_existing_fail_closed_owner_systemd_load_state: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_systemd_result.stdout_lines
+        | default([])
+        | select('match', '^LoadState=')
+        | map('regex_replace', '^LoadState=', '')
+        | first
+        | default('')
+      }}
+    qbittorrent_existing_fail_closed_owner_systemd_fragment_path: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_systemd_result.stdout_lines
+        | default([])
+        | select('match', '^FragmentPath=')
+        | map('regex_replace', '^FragmentPath=', '')
+        | first
+        | default('')
+      }}
+    qbittorrent_existing_fail_closed_owner_systemd_active_state: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_systemd_result.stdout_lines
+        | default([])
+        | select('match', '^ActiveState=')
+        | map('regex_replace', '^ActiveState=', '')
+        | first
+        | default('')
+      }}
+    qbittorrent_existing_fail_closed_owner_systemd_job: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_systemd_result.stdout_lines
+        | default([])
+        | select('match', '^Job=')
+        | map('regex_replace', '^Job=', '')
+        | first
+        | default('invalid')
+      }}
+    qbittorrent_existing_fail_closed_owner_systemd_main_pid: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_systemd_result.stdout_lines
+        | default([])
+        | select('match', '^MainPID=')
+        | map('regex_replace', '^MainPID=', '')
+        | first
+        | default('')
+      }}
+  ansible.builtin.set_fact:
+    qbittorrent_existing_fail_closed_owner_systemd_contract_valid: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_systemd_result.rc == 0
+        and
+        qbittorrent_existing_fail_closed_owner_systemd_load_state == 'loaded'
+        and
+        qbittorrent_existing_fail_closed_owner_systemd_fragment_path
+        ==
+        devture_systemd_docker_base_systemd_path
+        + '/'
+        + qbittorrent_container_network_container_systemd_service
+        and
+        qbittorrent_existing_fail_closed_owner_systemd_active_state == 'active'
+        and
+        qbittorrent_existing_fail_closed_owner_systemd_job
+        in ['', '0', '[0 /]']
+        and
+        qbittorrent_existing_fail_closed_owner_systemd_main_pid
+        is match('^[1-9][0-9]*$')
+      }}
+
+- name: Query the intended namespace-owner identity for early attestation
+  when:
+    - qbittorrent_existing_fail_closed_target_identity_valid | bool
+    - qbittorrent_existing_unit_stat.stat.exists | bool
+    - qbittorrent_existing_unit_uses_container_network | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - >-
+        name=^/{{
+          qbittorrent_container_network_container
+          | replace('.', '[.]')
+        }}$
+      - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+  register: qbittorrent_existing_fail_closed_owner_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Record an exact intended namespace-owner ID
+  when:
+    - qbittorrent_existing_fail_closed_target_identity_valid | bool
+    - qbittorrent_existing_unit_stat.stat.exists | bool
+    - qbittorrent_existing_unit_uses_container_network | bool
+    - qbittorrent_existing_fail_closed_owner_query_result.rc == 0
+    - >-
+      qbittorrent_existing_fail_closed_owner_query_result.stdout_lines
+      | default([])
+      | reject('equalto', '')
+      | list
+      | length
+      == 1
+    - >-
+      (
+        qbittorrent_existing_fail_closed_owner_query_result.stdout_lines
+        | reject('equalto', '')
+        | list
+        | first
+      ).split('|')
+      | length
+      == 2
+    - >-
+      (
+        qbittorrent_existing_fail_closed_owner_query_result.stdout_lines
+        | reject('equalto', '')
+        | list
+        | first
+      ).split('|')[0]
+      is match('^[a-f0-9]{64}$')
+    - >-
+      (
+        qbittorrent_existing_fail_closed_owner_query_result.stdout_lines
+        | reject('equalto', '')
+        | list
+        | first
+      ).split('|')[1]
+      == qbittorrent_container_network_container
+  ansible.builtin.set_fact:
+    qbittorrent_existing_fail_closed_owner_id: >-
+      {{
+        (
+          qbittorrent_existing_fail_closed_owner_query_result.stdout_lines
+          | reject('equalto', '')
+          | list
+          | first
+        ).split('|')[0]
+      }}
+
+- name: Inspect the intended namespace-owner contract for early attestation
+  when: qbittorrent_existing_fail_closed_owner_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - inspect
+      - "--format={{ '{{' }}json .{{ '}}' }}"
+      - "{{ qbittorrent_existing_fail_closed_owner_id }}"
+  register: qbittorrent_existing_fail_closed_owner_inspect_result
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Parse the intended namespace-owner contract for early attestation
+  when:
+    - qbittorrent_existing_fail_closed_owner_id | length > 0
+    - qbittorrent_existing_fail_closed_owner_inspect_result.rc == 0
+  ansible.builtin.set_fact:
+    qbittorrent_existing_fail_closed_owner_inspect: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_inspect_result.stdout
+        | from_json
+      }}
+  no_log: true
+
+- name: Attest the intended namespace-owner contract
+  when:
+    - qbittorrent_existing_fail_closed_owner_id | length > 0
+    - qbittorrent_existing_fail_closed_owner_inspect_result.rc == 0
+  vars:
+    qbittorrent_existing_fail_closed_owner_config: >-
+      {{ qbittorrent_existing_fail_closed_owner_inspect.Config | default({}) }}
+    qbittorrent_existing_fail_closed_owner_labels: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_config.Labels
+        | default({}, true)
+      }}
+    qbittorrent_existing_fail_closed_owner_health: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_inspect.State.Health
+        | default({})
+      }}
+  ansible.builtin.set_fact:
+    qbittorrent_existing_fail_closed_owner_contract_valid: >-
+      {{
+        qbittorrent_existing_fail_closed_owner_systemd_contract_valid | bool
+        and
+        qbittorrent_existing_fail_closed_owner_inspect.Id
+        == qbittorrent_existing_fail_closed_owner_id
+        and
+        qbittorrent_existing_fail_closed_owner_inspect.Name
+        == '/' + qbittorrent_container_network_container
+        and
+        qbittorrent_existing_fail_closed_owner_inspect.State.Running
+        | default(false)
+        | bool
+        and
+        qbittorrent_existing_fail_closed_owner_health.Status
+        | default('')
+        == 'healthy'
+        and
+        qbittorrent_existing_fail_closed_owner_labels.get(
+          qbittorrent_container_network_container_contract_label,
+          ''
+        )
+        == qbittorrent_container_network_container_contract_label_value
+      }}
+  no_log: true
+
+- name: Initialize existing qBittorrent fail-closed container attestation
+  ansible.builtin.set_fact:
+    qbittorrent_existing_container_fail_closed_contract_valid: false
+    qbittorrent_existing_container_fail_closed_contract_id: ""
+    qbittorrent_existing_fail_closed_container_inspect: {}
+
+- name: Query the existing container-network qBittorrent identity
+  when:
+    - qbittorrent_existing_unit_stat.stat.exists | bool
+    - qbittorrent_existing_unit_uses_container_network | bool
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - ls
+      - --all
+      - --no-trunc
+      - --filter
+      - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+      - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+  register: qbittorrent_existing_fail_closed_container_query_result
+  changed_when: false
+  failed_when: false
+
+- name: Require an unambiguous existing container-network qBittorrent identity
+  when:
+    - qbittorrent_existing_unit_stat.stat.exists | bool
+    - qbittorrent_existing_unit_uses_container_network | bool
+  vars:
+    qbittorrent_existing_fail_closed_container_query_lines: >-
+      {{
+        qbittorrent_existing_fail_closed_container_query_result.stdout_lines
+        | default([])
+        | reject('equalto', '')
+        | list
+      }}
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_existing_fail_closed_container_query_result.rc == 0
+      - >-
+        qbittorrent_existing_fail_closed_container_query_lines | length == 0
+        or
+        (
+          qbittorrent_existing_fail_closed_container_query_lines | length == 1
+          and
+          qbittorrent_existing_fail_closed_container_query_lines[0].split('|')
+          | length
+          == 2
+          and
+          qbittorrent_existing_fail_closed_container_query_lines[0].split('|')[0]
+          is match('^[a-f0-9]{64}$')
+          and
+          qbittorrent_existing_fail_closed_container_query_lines[0].split('|')[1]
+          == qbittorrent_identifier
+        )
+    fail_msg: >-
+      The existing container-network qBittorrent identity cannot be attested.
+      It has not been treated as a current fail-closed container.
+
+- name: Record the existing container-network qBittorrent ID
+  when:
+    - qbittorrent_existing_unit_stat.stat.exists | bool
+    - qbittorrent_existing_unit_uses_container_network | bool
+    - >-
+      qbittorrent_existing_fail_closed_container_query_result.stdout_lines
+      | default([])
+      | reject('equalto', '')
+      | list
+      | length
+      == 1
+  ansible.builtin.set_fact:
+    qbittorrent_existing_container_fail_closed_contract_id: >-
+      {{
+        (
+          qbittorrent_existing_fail_closed_container_query_result.stdout_lines
+          | reject('equalto', '')
+          | list
+          | first
+        ).split('|')[0]
+      }}
+
+- name: Inspect the existing container-network qBittorrent contract
+  when:
+    - qbittorrent_existing_container_fail_closed_contract_id | length > 0
+  ansible.builtin.command:
+    argv:
+      - "{{ devture_systemd_docker_base_host_command_docker }}"
+      - container
+      - inspect
+      - "--format={{ '{{' }}json .{{ '}}' }}"
+      - "{{ qbittorrent_existing_container_fail_closed_contract_id }}"
+  register: qbittorrent_existing_fail_closed_container_inspect_result
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Parse the existing container-network qBittorrent contract
+  when:
+    - qbittorrent_existing_container_fail_closed_contract_id | length > 0
+    - qbittorrent_existing_fail_closed_container_inspect_result.rc == 0
+  ansible.builtin.set_fact:
+    qbittorrent_existing_fail_closed_container_inspect: >-
+      {{
+        qbittorrent_existing_fail_closed_container_inspect_result.stdout
+        | from_json
+      }}
+  no_log: true
+
+- name: Attest the existing container-network qBittorrent contract
+  when:
+    - qbittorrent_existing_container_fail_closed_contract_id | length > 0
+    - qbittorrent_existing_fail_closed_container_inspect_result.rc == 0
+  vars:
+    qbittorrent_existing_fail_closed_config: >-
+      {{ qbittorrent_existing_fail_closed_container_inspect.Config | default({}) }}
+    qbittorrent_existing_fail_closed_host_config: >-
+      {{
+        qbittorrent_existing_fail_closed_container_inspect.HostConfig
+        | default({})
+      }}
+    qbittorrent_existing_fail_closed_labels: >-
+      {{
+        qbittorrent_existing_fail_closed_config.Labels
+        | default({}, true)
+      }}
+    qbittorrent_existing_fail_closed_environment: >-
+      {{
+        qbittorrent_existing_fail_closed_config.Env
+        | default([], true)
+      }}
+    qbittorrent_existing_fail_closed_mounts: >-
+      {{
+        qbittorrent_existing_fail_closed_container_inspect.Mounts
+        | default([], true)
+      }}
+    qbittorrent_existing_fail_closed_mount_destinations: >-
+      {{
+        qbittorrent_existing_fail_closed_mounts
+        | map(attribute='Destination')
+        | list
+      }}
+    qbittorrent_expected_fail_closed_mount_destinations: >-
+      {{
+        [
+          '/config',
+          '/etc/resolv.conf',
+          qbittorrent_download_bind_path,
+        ]
+        | sort
+      }}
+    qbittorrent_existing_fail_closed_proxy_environment: >-
+      {{
+        qbittorrent_existing_fail_closed_environment
+        | select(
+          'match',
+          '^(?:HTTP_PROXY|HTTPS_PROXY|NO_PROXY|ALL_PROXY|FTP_PROXY|http_proxy|https_proxy|no_proxy|all_proxy|ftp_proxy)='
+        )
+        | list
+        | sort
+      }}
+    qbittorrent_expected_neutral_proxy_environment:
+      - ALL_PROXY=
+      - FTP_PROXY=
+      - HTTP_PROXY=
+      - HTTPS_PROXY=
+      - NO_PROXY=
+      - all_proxy=
+      - ftp_proxy=
+      - http_proxy=
+      - https_proxy=
+      - no_proxy=
+    qbittorrent_existing_fail_closed_unit_active_state: >-
+      {{
+        qbittorrent_pre_mutation_unit_state_result.stdout_lines
+        | select('match', '^ActiveState=')
+        | first
+        | regex_replace('^ActiveState=', '')
+      }}
+    qbittorrent_existing_fail_closed_unit_lines: >-
+      {{
+        (
+          qbittorrent_existing_unit_content.content
+          | default('')
+          | b64decode
+        ).splitlines()
+      }}
+    qbittorrent_existing_fail_closed_helper_path: >-
+      {{
+        devture_systemd_docker_base_systemd_path
+        + '/'
+        + qbittorrent_identifier
+        + '-container-network-helper'
+      }}
+  ansible.builtin.set_fact:
+    qbittorrent_existing_container_fail_closed_contract_valid: >-
+      {{
+        qbittorrent_existing_fail_closed_target_identity_valid | bool
+        and
+        qbittorrent_existing_fail_closed_owner_contract_valid | bool
+        and
+        qbittorrent_existing_helper_has_fail_closed_contract | bool
+        and qbittorrent_existing_fail_closed_unit_active_state == 'active'
+        and
+        '# MASH-Role=qBittorrent'
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        (
+          '# MASH-NetworkNamespaceOwner='
+          + qbittorrent_container_network_container
+        )
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        '# MASH-NetworkNamespaceIdentity=resolved-full-container-id'
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        (
+          'BindsTo='
+          + qbittorrent_container_network_container_systemd_service
+        )
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        (
+          'After='
+          + qbittorrent_container_network_container_systemd_service
+        )
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        (
+          'ExecStartPre='
+          + qbittorrent_existing_fail_closed_helper_path
+          + ' cleanup'
+        )
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        (
+          'ExecStartPre='
+          + qbittorrent_existing_fail_closed_helper_path
+          + ' prepare'
+        )
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        (
+          'ExecStart='
+          + qbittorrent_existing_fail_closed_helper_path
+          + ' start'
+        )
+        in qbittorrent_existing_fail_closed_unit_lines
+        and
+        qbittorrent_existing_fail_closed_container_inspect.Id
+        == qbittorrent_existing_container_fail_closed_contract_id
+        and
+        qbittorrent_existing_fail_closed_container_inspect.Name
+        == '/' + qbittorrent_identifier
+        and
+        qbittorrent_existing_fail_closed_container_inspect.State.Running
+        | default(false)
+        | bool
+        and
+        qbittorrent_existing_fail_closed_host_config.NetworkMode
+        | default('')
+        == 'container:' + qbittorrent_existing_fail_closed_owner_id
+        and
+        qbittorrent_existing_fail_closed_labels.get(
+          'io.mash.qbittorrent.owner',
+          ''
+        )
+        == qbittorrent_identifier
+        and
+        qbittorrent_existing_fail_closed_labels.get(
+          'io.mash.qbittorrent.fail-closed-contract',
+          ''
+        )
+        == 'v1'
+        and
+        qbittorrent_existing_fail_closed_host_config.PortBindings
+        | default({}, true)
+        | length
+        == 0
+        and not
+        qbittorrent_existing_fail_closed_host_config.PublishAllPorts
+        | default(false)
+        | bool
+        and not
+        qbittorrent_existing_fail_closed_host_config.Privileged
+        | default(true)
+        | bool
+        and
+        qbittorrent_existing_fail_closed_host_config.AutoRemove
+        | default(false)
+        | bool
+        and
+        qbittorrent_existing_fail_closed_host_config.ReadonlyRootfs
+        | default(false)
+        | bool
+        and
+        qbittorrent_existing_fail_closed_host_config.CapDrop
+        | default([], true)
+        | map('upper')
+        | list
+        | sort
+        == ['ALL']
+        and
+        qbittorrent_existing_fail_closed_host_config.CapAdd
+        | default([], true)
+        | map('upper')
+        | list
+        | sort
+        ==
+        ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETGID', 'SETUID']
+        | sort
+        and
+        qbittorrent_existing_fail_closed_config.User
+        | default('')
+        is match('^[1-9][0-9]*:[1-9][0-9]*$')
+        and
+        qbittorrent_existing_fail_closed_host_config.Devices
+        | default([], true)
+        | length
+        == 0
+        and
+        qbittorrent_existing_fail_closed_host_config.DeviceRequests
+        | default([], true)
+        | length
+        == 0
+        and qbittorrent_existing_fail_closed_mounts | length == 3
+        and
+        qbittorrent_existing_fail_closed_mount_destinations
+        | sort
+        == qbittorrent_expected_fail_closed_mount_destinations
+        and
+        qbittorrent_existing_fail_closed_mounts
+        | selectattr('Source', 'equalto', qbittorrent_data_path)
+        | selectattr('Destination', 'equalto', '/config')
+        | selectattr('Type', 'equalto', 'bind')
+        | selectattr('RW', 'equalto', true)
+        | list
+        | length
+        == 1
+        and
+        qbittorrent_existing_fail_closed_mounts
+        | selectattr('Source', 'equalto', qbittorrent_download_path)
+        | selectattr('Destination', 'equalto', qbittorrent_download_bind_path)
+        | selectattr('Type', 'equalto', 'bind')
+        | selectattr('RW', 'equalto', true)
+        | list
+        | length
+        == 1
+        and
+        qbittorrent_existing_fail_closed_mounts
+        | selectattr(
+          'Source',
+          'equalto',
+          qbittorrent_container_network_container_resolv_conf_path
+        )
+        | selectattr('Destination', 'equalto', '/etc/resolv.conf')
+        | selectattr('Type', 'equalto', 'bind')
+        | rejectattr('RW')
+        | list
+        | length
+        == 1
+        and
+        qbittorrent_existing_fail_closed_mounts
+        | map(attribute='Source')
+        | select(
+          'search',
+          '(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)'
+        )
+        | list
+        | length
+        == 0
+        and
+        qbittorrent_existing_fail_closed_proxy_environment
+        == qbittorrent_expected_neutral_proxy_environment
+        and
+        qbittorrent_existing_fail_closed_environment
+        | select('match', '^(?:OPENVPN|WIREGUARD|VPN_)')
+        | list
+        | length
+        == 0
+      }}
+  no_log: true

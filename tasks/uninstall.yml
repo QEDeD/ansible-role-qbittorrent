@@ -8,6 +8,25 @@
 - name: Quiesce qBittorrent before uninstall lifecycle mutation
   ansible.builtin.include_tasks: "{{ role_path }}/tasks/quiesce.yml"
 
+- name: Validate a requested managed-network cleanup after isolation
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_container_network_mode in ['managed', 'container']
+      - >-
+        not qbittorrent_container_network_deletion_enabled | bool
+        or
+        (
+          qbittorrent_container_network_mode == 'managed'
+          and
+          qbittorrent_container_network
+          is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+          and
+          qbittorrent_container_network is not match('^[a-f0-9]+$')
+        )
+    fail_msg: >-
+      The requested qBittorrent managed-network cleanup target is unsafe.
+      qBittorrent remains isolated, and no network has been deleted.
+
 - name: Check existence of qBittorrent systemd service
   ansible.builtin.stat:
     path: "{{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service"
