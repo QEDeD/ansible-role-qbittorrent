@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Prepare qBittorrent container-network Molecule tests
+  hosts: all
+  become: true
+  gather_facts: true
+  tasks:
+    - name: Ensure apt cache is updated for qBittorrent Molecule tests preparation
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 600
+      when: ansible_os_family == 'Debian'
+
+    - name: Ensure required packages are installed for qBittorrent Molecule tests preparation
+      ansible.builtin.package:
+        name:
+          - python3-requests
+        state: present
+
+    - name: Ensure Docker is installed for qBittorrent Molecule tests preparation
+      ansible.builtin.include_role:
+        name: ansible-role-docker
+      vars:
+        docker_daemon_options:
+          storage-driver: vfs
+
+    - name: Pull the synthetic namespace-owner image
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - pull
+          - "{{ qbittorrent_synthetic_owner_image }}"
+      register: qbittorrent_synthetic_owner_image_pull_result
+      changed_when: "'Downloaded newer image' in qbittorrent_synthetic_owner_image_pull_result.stdout"
+
+    - name: Ensure synthetic namespace-owner support path exists
+      ansible.builtin.file:
+        path: /opt/qbittorrent-synthetic-owner
+        state: directory
+        mode: "0755"
+
+    - name: Ensure synthetic namespace-owner resolver file exists
+      ansible.builtin.copy:
+        content: |
+          nameserver 127.0.0.1
+          options ndots:0
+        dest: /opt/qbittorrent-synthetic-owner/resolv.conf
+        mode: "0644"
+
+    - name: Install the synthetic healthy namespace-owner unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/qbittorrent-synthetic-owner.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Synthetic qBittorrent namespace owner
+          Requires=docker.service
+          After=docker.service
+          Wants=qbittorrent.service
+
+          [Service]
+          Type=simple
+          ExecStartPre=-/usr/bin/docker container rm --force qbittorrent-synthetic-owner
+          ExecStartPre=/usr/bin/docker container create --rm --name=qbittorrent-synthetic-owner --label=io.mash.test.fail-closed-contract=synthetic-v1 --health-cmd=true --health-interval=1s --health-retries=3 --network=none {{ qbittorrent_synthetic_owner_image }} sleep infinity
+          ExecStart=/usr/bin/docker container start --attach qbittorrent-synthetic-owner
+          ExecStartPost=/bin/sh -c 'i=0; while [ "$i" -lt 20 ]; do status=$(/usr/bin/docker container inspect --format="{% raw %}{{.State.Health.Status}}{% endraw %}" qbittorrent-synthetic-owner 2>/dev/null || true); [ "$status" = healthy ] && exit 0; sleep 1; i=$((i + 1)); done; exit 1'
+          ExecStop=-/usr/bin/docker container stop --time 5 qbittorrent-synthetic-owner
+          Restart=always
+          RestartSec=1
+
+          [Install]
+          WantedBy=multi-user.target

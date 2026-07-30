@@ -54,6 +54,13 @@ qbittorrent_container_network_mode: managed
 # the lifecycle helper resolves and validates the current full ID at runtime.
 qbittorrent_container_network_container: ""
 
+# Label key and value which identify the namespace owner's enforced networking
+# contract. Both are required in `container` mode. The owner role is responsible
+# for applying this label only when it also enforces the corresponding
+# firewall, DNS, capability, and lifecycle contract.
+qbittorrent_container_network_container_contract_label: ""
+qbittorrent_container_network_container_contract_label_value: ""
+
 # The systemd service which manages `qbittorrent_container_network_container`.
 # This is required in `container` mode and is automatically rendered as both
 # `BindsTo=` and `After=`.
@@ -170,6 +177,12 @@ qbittorrent_container_labels_traefik_middleware_basic_auth_users: ""
 qbittorrent_container_labels_additional_labels: "{{ qbittorrent_container_labels_additional_labels_auto + qbittorrent_container_labels_additional_labels_custom }}"
 qbittorrent_container_labels_additional_labels_auto: []
 qbittorrent_container_labels_additional_labels_custom: []
+
+# Fixed metadata used to distinguish containers created by this role from
+# unrelated containers which later acquire the same Docker name. Validation
+# prevents either value from being overridden, and labels.j2 renders it last.
+qbittorrent_container_role_label: io.mash.qbittorrent.owner
+qbittorrent_container_role_label_value: "{{ qbittorrent_identifier }}"
 
 # Specify the size of the container's tmpfs volume
 qbittorrent_container_tmpfs_run_size: 128m

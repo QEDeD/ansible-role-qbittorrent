@@ -49,3 +49,5 @@ traefik.http.services.{{ qbittorrent_identifier }}.loadbalancer.server.port={{ q
 {% for arg in qbittorrent_container_labels_additional_labels %}
 {{ arg }}
 {% endfor %}
+
+{{ qbittorrent_container_role_label }}={{ qbittorrent_container_role_label_value }}

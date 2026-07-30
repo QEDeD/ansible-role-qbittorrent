@@ -1,0 +1,226 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Exercise qBittorrent transition and persistent-quiesce recovery
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    qbittorrent_test_role_name: >-
+      {{ lookup('env', 'MOLECULE_PROJECT_DIRECTORY') | basename }}
+    qbittorrent_test_unit_path: /etc/systemd/system/qbittorrent.service
+    qbittorrent_test_helper_path: >-
+      /etc/systemd/system/qbittorrent-container-network-helper
+    qbittorrent_test_quiesce_path: >-
+      /etc/systemd/system/qbittorrent.service.d/zzzz-mash-fail-closed-quiesce.conf
+    qbittorrent_test_managed_network: qbittorrent-transition-managed
+  tasks:
+    - name: Validate the current container-network configuration before interruption
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        tasks_from: validate_config
+        public: true
+
+    - name: Validate lifecycle targets before the simulated interruption
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        tasks_from: validate_uninstall
+        public: true
+
+    - name: Apply only the persistent qBittorrent quiesce
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        tasks_from: quiesce
+        public: true
+
+    - name: Remove the main unit to simulate an interrupted uninstall
+      ansible.builtin.file:
+        path: "{{ qbittorrent_test_unit_path }}"
+        state: absent
+
+    - name: Reload systemd after simulating the interrupted uninstall
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+    - name: Inspect the retained persistent qBittorrent quiesce
+      ansible.builtin.stat:
+        path: "{{ qbittorrent_test_quiesce_path }}"
+        follow: false
+      register: qbittorrent_test_interrupted_quiesce_stat
+
+    - name: Query qBittorrent after the simulated interrupted uninstall
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - name=^/qbittorrent$
+      register: qbittorrent_test_interrupted_container_query
+      changed_when: false
+
+    - name: Assert the interrupted state remains isolated and recoverable
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_test_interrupted_quiesce_stat.stat.exists | bool
+          - qbittorrent_test_interrupted_quiesce_stat.stat.isreg | bool
+          - qbittorrent_test_interrupted_container_query.stdout | trim | length == 0
+
+    - name: Retry the role with a retained quiesce and no main unit
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        public: true
+
+    - name: Inspect recovery artifacts after the retry
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ qbittorrent_test_unit_path }}"
+        - "{{ qbittorrent_test_quiesce_path }}"
+      register: qbittorrent_test_retry_artifact_stats
+
+    - name: Assert the retry restored the unit and released only the guard
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_test_retry_artifact_stats.results[0].stat.isreg | bool
+          - not qbittorrent_test_retry_artifact_stats.results[1].stat.exists | bool
+
+    - name: Start qBittorrent after persistent-quiesce recovery
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: started
+
+    - name: Switch qBittorrent from container to managed networking
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        public: false
+      vars:
+        qbittorrent_container_network_mode: managed
+        qbittorrent_container_network_container: ""
+        qbittorrent_container_network_container_contract_label: ""
+        qbittorrent_container_network_container_contract_label_value: ""
+        qbittorrent_container_network_container_systemd_service: ""
+        qbittorrent_container_network_container_resolv_conf_path: ""
+        qbittorrent_container_hostname: qbittorrent
+        qbittorrent_container_network: "{{ qbittorrent_test_managed_network }}"
+        qbittorrent_container_network_deletion_enabled: false
+        qbittorrent_container_http_host_bind_port: ""
+        qbittorrent_container_torrenting_host_bind_port: ""
+        qbittorrent_container_additional_networks: []
+        qbittorrent_container_extra_arguments: []
+
+    - name: Start qBittorrent in managed-network mode
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: started
+
+    - name: Inspect qBittorrent's managed network mode
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.HostConfig.NetworkMode}}{% endraw %}"
+          - qbittorrent
+      register: qbittorrent_test_managed_network_result
+      changed_when: false
+
+    - name: Inspect managed-transition support artifacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ qbittorrent_test_helper_path }}"
+        - "{{ qbittorrent_test_quiesce_path }}"
+      register: qbittorrent_test_managed_artifact_stats
+
+    - name: Assert the container-to-managed transition completed
+      ansible.builtin.assert:
+        that:
+          - >-
+            qbittorrent_test_managed_network_result.stdout
+            | trim
+            == qbittorrent_test_managed_network
+          - not qbittorrent_test_managed_artifact_stats.results[0].stat.exists | bool
+          - not qbittorrent_test_managed_artifact_stats.results[1].stat.exists | bool
+
+    - name: Switch qBittorrent back to container networking
+      ansible.builtin.include_role:
+        name: "{{ qbittorrent_test_role_name }}"
+        public: false
+      vars:
+        qbittorrent_container_network_mode: container
+        qbittorrent_container_network_container: qbittorrent-synthetic-owner
+        qbittorrent_container_network_container_contract_label: >-
+          io.mash.test.fail-closed-contract
+        qbittorrent_container_network_container_contract_label_value: >-
+          synthetic-v1
+        qbittorrent_container_network_container_systemd_service: >-
+          qbittorrent-synthetic-owner.service
+        qbittorrent_container_network_container_resolv_conf_path: >-
+          /opt/qbittorrent-synthetic-owner/resolv.conf
+        qbittorrent_container_hostname: ""
+        qbittorrent_container_network: ""
+        qbittorrent_container_network_deletion_enabled: false
+        qbittorrent_container_http_host_bind_port: ""
+        qbittorrent_container_torrenting_host_bind_port: ""
+        qbittorrent_container_additional_networks: []
+        qbittorrent_container_extra_arguments: []
+
+    - name: Ensure the synthetic owner is active before final recovery
+      ansible.builtin.systemd_service:
+        name: qbittorrent-synthetic-owner.service
+        state: started
+
+    - name: Start qBittorrent after the managed-to-container transition
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: started
+
+    - name: Inspect the final synthetic owner identity
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.Id}}{% endraw %}"
+          - qbittorrent-synthetic-owner
+      register: qbittorrent_test_final_owner_id_result
+      changed_when: false
+
+    - name: Inspect qBittorrent's final namespace binding
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.HostConfig.NetworkMode}}{% endraw %}"
+          - qbittorrent
+      register: qbittorrent_test_final_network_result
+      changed_when: false
+
+    - name: Inspect the final persistent-quiesce path
+      ansible.builtin.stat:
+        path: "{{ qbittorrent_test_quiesce_path }}"
+        follow: false
+      register: qbittorrent_test_final_quiesce_stat
+
+    - name: Assert the managed-to-container transition completed
+      ansible.builtin.assert:
+        that:
+          - >-
+            qbittorrent_test_final_owner_id_result.stdout
+            | trim
+            is match('^[a-f0-9]{64}$')
+          - >-
+            qbittorrent_test_final_network_result.stdout
+            | trim
+            ==
+            'container:'
+            + (qbittorrent_test_final_owner_id_result.stdout | trim)
+          - not qbittorrent_test_final_quiesce_stat.stat.exists | bool

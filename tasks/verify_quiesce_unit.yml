@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Inspect the effective qBittorrent load state while quiesced
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=LoadState
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_load_state_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent service type while quiesced
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=Type
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_service_type_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent restart policy
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=Restart
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_restart_policy_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent forced restart statuses
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=RestartForceExitStatus
+      - --property=RestartPreventExitStatus
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_restart_statuses_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent manual-start policy
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=RefuseManualStart
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_manual_start_policy_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent drop-in paths
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=DropInPaths
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_dropin_paths_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent start command
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecStart
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_start_command_result
+  changed_when: false
+
+- name: Inspect the effective qBittorrent stop commands
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecStop
+      - --property=ExecStopPost
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_stop_commands_result
+  changed_when: false
+
+- name: Inspect other effective qBittorrent lifecycle commands
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecCondition
+      - --property=ExecStartPre
+      - --property=ExecStartPost
+      - --property=ExecReload
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_quiesce_other_commands_result
+  changed_when: false
+
+- name: Prove the effective qBittorrent unit is exactly quiesced
+  vars:
+    qbittorrent_quiesce_dropin_path: >-
+      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_quiesce_load_state_result.stdout | trim == 'loaded'
+      - qbittorrent_quiesce_service_type_result.stdout | trim == 'simple'
+      - qbittorrent_quiesce_restart_policy_result.stdout | trim == 'no'
+      - qbittorrent_quiesce_restart_statuses_result.stdout | trim | length == 0
+      - >-
+        qbittorrent_quiesce_manual_start_policy_result.stdout
+        | trim
+        == 'yes'
+      - >-
+        qbittorrent_quiesce_dropin_path
+        in qbittorrent_quiesce_dropin_paths_result.stdout.split()
+      - >-
+        (
+          qbittorrent_quiesce_start_command_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+        )
+        == ['/bin/false']
+      - >-
+        (
+          qbittorrent_quiesce_stop_commands_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+        )
+        == ['/bin/true', '/bin/true']
+      - >-
+        (
+          qbittorrent_quiesce_other_commands_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+          | length
+        )
+        == 0
+    fail_msg: >-
+      The effective qBittorrent unit did not adopt the exact inert,
+      non-restarting, name-free lifecycle contract.

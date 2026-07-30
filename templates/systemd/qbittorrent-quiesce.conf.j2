@@ -1,0 +1,23 @@
+{#
+SPDX-FileCopyrightText: 2026 MASH project contributors
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+#}
+# MASH-Role=qBittorrent-quiesce
+[Unit]
+RefuseManualStart=yes
+
+[Service]
+Restart=no
+RestartForceExitStatus=
+RestartPreventExitStatus=
+ExecCondition=
+ExecStartPre=
+ExecStart=
+ExecStart=/bin/false
+ExecStartPost=
+ExecReload=
+ExecStop=
+ExecStop=/bin/true
+ExecStopPost=
+ExecStopPost=/bin/true

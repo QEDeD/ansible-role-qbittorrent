@@ -15,6 +15,8 @@
   block:
     - name: Validate qBittorrent configuration
       ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_config.yml"
+    - name: Validate qBittorrent lifecycle mutation safety
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_uninstall.yml"
     - name: Install qBittorrent
       ansible.builtin.include_tasks: "{{ role_path }}/tasks/install.yml"
 
@@ -33,5 +35,7 @@
     - setup-all
     - setup-qbittorrent
   block:
+    - name: Validate qBittorrent uninstall safety
+      ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_uninstall.yml"
     - name: Uninstall qBittorrent
       ansible.builtin.include_tasks: "{{ role_path }}/tasks/uninstall.yml"

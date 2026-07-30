@@ -1,0 +1,310 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Validate qBittorrent uninstall identity and command settings
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_identifier is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+      - qbittorrent_identifier is not match('^[a-f0-9]+$')
+      - qbittorrent_container_network_mode in ['managed', 'container']
+      - qbittorrent_container_role_label == 'io.mash.qbittorrent.owner'
+      - qbittorrent_container_role_label_value == qbittorrent_identifier
+      - >-
+        qbittorrent_systemd_systemctl_command
+        is match('^/[A-Za-z0-9_./-]+$')
+      - "'//' not in qbittorrent_systemd_systemctl_command"
+      - "'.' not in qbittorrent_systemd_systemctl_command.split('/')"
+      - "'..' not in qbittorrent_systemd_systemctl_command.split('/')"
+      - >-
+        devture_systemd_docker_base_host_command_docker
+        is match('^/[A-Za-z0-9_./-]+$')
+      - "'//' not in devture_systemd_docker_base_host_command_docker"
+      - >-
+        '..'
+        not in devture_systemd_docker_base_host_command_docker.split('/')
+      - >-
+        devture_systemd_docker_base_systemd_path
+        is match('^/(?:etc|run|usr/lib)/systemd/system$')
+      - >-
+        not qbittorrent_container_network_deletion_enabled | bool
+        or
+        (
+          qbittorrent_container_network_mode == 'managed'
+          and
+          qbittorrent_container_network
+          is match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+          and
+          qbittorrent_container_network is not match('^[a-f0-9]+$')
+        )
+    fail_msg: >-
+      qBittorrent uninstall identity, command, systemd, ownership-label, or
+      managed-network settings are unsafe. Nothing has been stopped or removed.
+
+- name: Validate qBittorrent uninstall filesystem paths
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_paths.yml"
+
+- name: Check the existing qBittorrent unit before lifecycle mutation
+  ansible.builtin.stat:
+    path: >-
+      {{
+        devture_systemd_docker_base_systemd_path
+        + '/'
+        + qbittorrent_identifier
+        + '.service'
+      }}
+    follow: false
+  register: qbittorrent_existing_unit_stat
+
+- name: Require an existing qBittorrent unit path to be a safe object
+  when: qbittorrent_existing_unit_stat.stat.exists | bool
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_existing_unit_stat.stat.isreg | bool
+      - not qbittorrent_existing_unit_stat.stat.islnk | default(false) | bool
+    fail_msg: >-
+      The existing qBittorrent unit path is not a real file. It has not been
+      read, stopped, overwritten, disabled, or deleted.
+
+- name: Read the existing qBittorrent unit before lifecycle mutation
+  when: qbittorrent_existing_unit_stat.stat.exists | bool
+  ansible.builtin.slurp:
+    src: >-
+      {{
+        devture_systemd_docker_base_systemd_path
+        + '/'
+        + qbittorrent_identifier
+        + '.service'
+      }}
+  register: qbittorrent_existing_unit_content
+
+- name: Require an existing qBittorrent unit to be role-recognizable
+  when: qbittorrent_existing_unit_stat.stat.exists | bool
+  vars:
+    qbittorrent_existing_unit_lines: >-
+      {{ (qbittorrent_existing_unit_content.content | b64decode).splitlines() }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        '# MASH-Role=qBittorrent' in qbittorrent_existing_unit_lines
+        or
+        (
+          'Description=qBittorrent (' + qbittorrent_identifier + ')'
+          in qbittorrent_existing_unit_lines
+          and
+          'SyslogIdentifier=' + qbittorrent_identifier
+          in qbittorrent_existing_unit_lines
+          and 'Type=simple' in qbittorrent_existing_unit_lines
+          and 'Restart=always' in qbittorrent_existing_unit_lines
+          and 'RestartSec=30' in qbittorrent_existing_unit_lines
+          and 'WantedBy=multi-user.target' in qbittorrent_existing_unit_lines
+          and
+          (
+            (
+              'ExecStart='
+              + devture_systemd_docker_base_host_command_docker
+              + ' start --attach '
+              + qbittorrent_identifier
+            )
+            in qbittorrent_existing_unit_lines
+            and
+            (
+              qbittorrent_existing_unit_lines
+              | select(
+                'match',
+                '^ExecStartPre='
+                + devture_systemd_docker_base_host_command_docker
+                + ' create'
+              )
+              | list
+              | length
+            )
+            == 1
+            or
+            (
+              '# MASH-NetworkNamespaceIdentity=resolved-full-container-id'
+              in qbittorrent_existing_unit_lines
+              and
+              (
+                qbittorrent_existing_unit_lines
+                | select(
+                  'match',
+                  '^ExecStart='
+                  + devture_systemd_docker_base_systemd_path
+                  + '/'
+                  + qbittorrent_identifier
+                  + '-container-network-helper start$'
+                )
+                | list
+                | length
+              )
+              == 1
+            )
+          )
+        )
+    fail_msg: >-
+      The existing `{{ qbittorrent_identifier }}.service` unit is not
+      recognizable as a qBittorrent role unit. It will not be stopped,
+      overwritten, disabled, or deleted.
+
+- name: Record the existing qBittorrent unit contract
+  ansible.builtin.set_fact:
+    qbittorrent_existing_unit_has_role_marker: >-
+      {{
+        qbittorrent_existing_unit_stat.stat.exists | bool
+        and
+        '# MASH-Role=qBittorrent'
+        in (
+          (
+            qbittorrent_existing_unit_content.content
+            | default('')
+            | b64decode
+          ).splitlines()
+        )
+      }}
+    qbittorrent_existing_unit_uses_container_network: >-
+      {{
+        qbittorrent_existing_unit_stat.stat.exists | bool
+        and
+        (
+          (
+            (
+              qbittorrent_existing_unit_content.content
+              | default('')
+              | b64decode
+            ).splitlines()
+            | select('match', '^# MASH-NetworkNamespaceOwner=')
+            | list
+            | length
+          )
+          == 1
+        )
+      }}
+
+- name: Inspect the persistent qBittorrent quiesce directory
+  ansible.builtin.stat:
+    path: "/etc/systemd/system/{{ qbittorrent_identifier }}.service.d"
+    follow: false
+  register: qbittorrent_existing_quiesce_directory_stat
+
+- name: Require an existing qBittorrent quiesce directory to be safe
+  when: qbittorrent_existing_quiesce_directory_stat.stat.exists | bool
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_existing_quiesce_directory_stat.stat.isdir | bool
+      - >-
+        not
+        qbittorrent_existing_quiesce_directory_stat.stat.islnk
+        | default(false)
+        | bool
+    fail_msg: >-
+      The persistent qBittorrent drop-in path is not a real directory. No
+      lifecycle mutation has been applied.
+
+- name: Inspect an existing persistent qBittorrent quiesce drop-in
+  ansible.builtin.stat:
+    path: >-
+      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+    follow: false
+  register: qbittorrent_existing_quiesce_dropin_stat
+
+- name: Require an existing qBittorrent quiesce drop-in path to be safe
+  when: qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_existing_quiesce_dropin_stat.stat.isreg | bool
+      - >-
+        not
+        qbittorrent_existing_quiesce_dropin_stat.stat.islnk
+        | default(false)
+        | bool
+    fail_msg: >-
+      The reserved qBittorrent quiesce drop-in path is not a real file. It has
+      not been read, overwritten, or removed.
+
+- name: Read an existing persistent qBittorrent quiesce drop-in
+  when: qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool
+  ansible.builtin.slurp:
+    src: >-
+      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+  register: qbittorrent_existing_quiesce_dropin_content
+
+- name: Require an existing qBittorrent quiesce drop-in to be role-owned
+  when: qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool
+  ansible.builtin.assert:
+    that:
+      - >-
+        '# MASH-Role=qBittorrent-quiesce'
+        in (
+          qbittorrent_existing_quiesce_dropin_content.content
+          | b64decode
+        )
+    fail_msg: >-
+      The reserved qBittorrent quiesce drop-in path is occupied by an
+      unrecognized object. It has not been overwritten or removed.
+
+- name: Record an adoptable persistent qBittorrent quiesce
+  ansible.builtin.set_fact:
+    qbittorrent_existing_quiesce_dropin_owned: >-
+      {{ qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool }}
+
+- name: Check the existing qBittorrent container-network helper
+  ansible.builtin.stat:
+    path: >-
+      {{
+        devture_systemd_docker_base_systemd_path
+        + '/'
+        + qbittorrent_identifier
+        + '-container-network-helper'
+      }}
+    follow: false
+  register: qbittorrent_existing_container_network_helper_stat
+
+- name: Require an existing qBittorrent helper path to be a safe object
+  when: qbittorrent_existing_container_network_helper_stat.stat.exists | bool
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_existing_container_network_helper_stat.stat.isreg | bool
+      - >-
+        not
+        qbittorrent_existing_container_network_helper_stat.stat.islnk
+        | default(false)
+        | bool
+    fail_msg: >-
+      The existing qBittorrent helper path is not a real file. It has not been
+      read, overwritten, or deleted.
+
+- name: Read the existing qBittorrent container-network helper
+  when: qbittorrent_existing_container_network_helper_stat.stat.exists | bool
+  ansible.builtin.slurp:
+    src: >-
+      {{
+        devture_systemd_docker_base_systemd_path
+        + '/'
+        + qbittorrent_identifier
+        + '-container-network-helper'
+      }}
+  register: qbittorrent_existing_container_network_helper_content
+
+- name: Require an existing qBittorrent helper to be role-recognizable
+  when: qbittorrent_existing_container_network_helper_stat.stat.exists | bool
+  vars:
+    qbittorrent_existing_helper_text: >-
+      {{ qbittorrent_existing_container_network_helper_content.content | b64decode }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        '# MASH-Role=qBittorrent-container-network-helper'
+        in qbittorrent_existing_helper_text
+        or
+        (
+          'owner_state_file="$state_directory/owner-id"'
+          in qbittorrent_existing_helper_text
+          and
+          'qbittorrent_state_file="$state_directory/qbittorrent-id"'
+          in qbittorrent_existing_helper_text
+        )
+    fail_msg: >-
+      The existing qBittorrent container-network helper is not recognizable as
+      role-owned. It will not be overwritten or deleted.

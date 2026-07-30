@@ -30,6 +30,9 @@
     - qbittorrent_path_prefix
     - qbittorrent_container_network_mode
 
+- name: Validate qBittorrent primary filesystem paths
+  ansible.builtin.include_tasks: "{{ role_path }}/tasks/validate_paths.yml"
+
 - name: Fail if qBittorrent container network mode is unsupported
   ansible.builtin.fail:
     msg: >-
@@ -78,6 +81,8 @@
     - lookup('vars', item, default='') | string | length > 0
   loop:
     - qbittorrent_container_network_container
+    - qbittorrent_container_network_container_contract_label
+    - qbittorrent_container_network_container_contract_label_value
     - qbittorrent_container_network_container_systemd_service
     - qbittorrent_container_network_container_resolv_conf_path
 
@@ -91,8 +96,33 @@
     - lookup('vars', item, default='') | string | length == 0
   loop:
     - qbittorrent_container_network_container
+    - qbittorrent_container_network_container_contract_label
+    - qbittorrent_container_network_container_contract_label_value
     - qbittorrent_container_network_container_systemd_service
     - qbittorrent_container_network_container_resolv_conf_path
+
+- name: Fail if qBittorrent namespace-owner contract label is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container_contract_label must be a
+      single-line Docker label key containing only letters, digits,
+      underscores, periods, and hyphens.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_contract_label
+      is not match('^[A-Za-z0-9][A-Za-z0-9_.-]*$')
+
+- name: Fail if qBittorrent namespace-owner contract label value is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_network_container_contract_label_value must be a
+      non-empty single-line value without Docker-inspection delimiters.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_container_network_container_contract_label_value
+      is not match('^[^|\r\n]+$')
 
 - name: Fail if qBittorrent namespace-owner resolver path is invalid
   ansible.builtin.fail:
@@ -106,8 +136,13 @@
       or
       (
         qbittorrent_container_network_container_resolv_conf_path
-        is not match('^/[^,\r\n]+$')
+        is not match('^/(?!/)[^,\r\n]+$')
       )
+      or
+      qbittorrent_container_network_container_resolv_conf_path
+      is search('[\x00-\x1f\x7f]')
+      or
+      '//' in qbittorrent_container_network_container_resolv_conf_path
       or
       qbittorrent_container_network_container_resolv_conf_path
       is search('(?:^|/)[.]{1,2}(?:/|$)')
@@ -122,10 +157,39 @@
     - qbittorrent_container_network_mode == 'container'
     - >-
       qbittorrent_container_network_container_resolv_conf_path
-      is match('^/(?:$|run/?$|var/?$|var/run/?$|var/lib/?$|var/lib/docker(?:/|$)|proc(?:/|$)|sys(?:/|$)|dev(?:/|$))')
+      is match('^/(?:$|bin(?:/|$)|boot(?:/|$)|dev(?:/|$)|etc(?:/|$)|lib(?:32|64)?(?:/|$)|proc(?:/|$)|root(?:/|$)|run(?:/|$)|sbin(?:/|$)|sys(?:/|$)|usr(?:/|$)|var/?$|var/run(?:/|$)|var/lib/?$|var/lib/(?:docker|containers|containerd|podman)(?:/|$))')
       or
       qbittorrent_container_network_container_resolv_conf_path
       is search('(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)')
+
+- name: Resolve the qBittorrent namespace-owner resolver path before rendering
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/readlink
+      - --canonicalize-missing
+      - --
+      - "{{ qbittorrent_container_network_container_resolv_conf_path }}"
+  register: qbittorrent_container_network_resolver_path_resolution_result
+  changed_when: false
+
+- name: Require the qBittorrent namespace-owner resolver path to be canonical
+  when: qbittorrent_container_network_mode == 'container'
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_container_network_resolver_path_resolution_result.rc == 0
+      - >-
+        qbittorrent_container_network_resolver_path_resolution_result.stdout_lines
+        | length
+        == 1
+      - >-
+        qbittorrent_container_network_resolver_path_resolution_result.stdout
+        | trim
+        ==
+        qbittorrent_container_network_container_resolv_conf_path
+    fail_msg: >-
+      qbittorrent_container_network_container_resolv_conf_path must not contain
+      or currently traverse a symbolic link.
 
 - name: Fail if qBittorrent namespace-owner container is not a stable exact Docker name
   ansible.builtin.fail:
@@ -181,17 +245,113 @@
       qbittorrent_container_network_container_systemd_service
       not in qbittorrent_systemd_binds_to_services_list
 
-- name: Fail if a qBittorrent bound systemd service name is unsafe
+- name: Fail if a qBittorrent dependency service name is unsafe
   ansible.builtin.fail:
     msg: >-
-      qbittorrent_systemd_binds_to_services_list contains an unsafe service name
-      (`{{ item }}`). Every entry must be a safely formed `.service` unit name
-      and must not refer to qBittorrent itself.
+      A qBittorrent required, wanted, or bound service list contains an unsafe
+      service name (`{{ item }}`). Every entry must be a safely formed
+      `.service` unit name and must not refer to qBittorrent itself.
   when:
     - >-
       item | string is not match('^[A-Za-z0-9][A-Za-z0-9:_.@-]*[.]service$')
       or item == qbittorrent_identifier + '.service'
-  loop: "{{ qbittorrent_systemd_binds_to_services_list }}"
+  loop: >-
+    {{
+      (
+        qbittorrent_systemd_required_services_list
+        + qbittorrent_systemd_wanted_services_list
+        + qbittorrent_systemd_binds_to_services_list
+      )
+      | unique
+    }}
+
+- name: Fail if qBittorrent container mode would run as root
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_uid and qbittorrent_gid must both be numeric and non-zero in
+      container-network mode.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_uid | string is not match('^[0-9]+$')
+      or qbittorrent_gid | string is not match('^[0-9]+$')
+      or qbittorrent_uid | int == 0
+      or qbittorrent_gid | int == 0
+
+- name: Fail if fixed qBittorrent ownership metadata was overridden
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_role_label and
+      qbittorrent_container_role_label_value are role-owned and cannot be
+      overridden.
+  when:
+    - >-
+      qbittorrent_container_role_label != 'io.mash.qbittorrent.owner'
+      or qbittorrent_container_role_label_value != qbittorrent_identifier
+
+- name: Fail if an additional qBittorrent label is multiline
+  ansible.builtin.fail:
+    msg: qBittorrent additional container labels must be single-line strings.
+  when:
+    - item is not string or '\n' in item or '\r' in item
+  loop: "{{ qbittorrent_container_labels_additional_labels }}"
+
+- name: Fail if an additional qBittorrent label overrides role ownership
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_container_labels_additional_labels must not define the
+      role-owned `{{ qbittorrent_container_role_label }}` label.
+  when:
+    - >-
+      item
+      is match(
+        '^' + (qbittorrent_container_role_label | regex_escape) + '='
+      )
+  loop: "{{ qbittorrent_container_labels_additional_labels }}"
+
+- name: Fail if a primary qBittorrent container-network bind source is unsafe
+  ansible.builtin.fail:
+    msg: >-
+      {{ item.name }} must be an absolute canonical application-data path and
+      must not expose a host-control tree or container-engine socket in
+      container-network mode (`{{ item.path }}`).
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      item.path | string is not match('^/')
+      or item.path | string is search('(?:^|/)[.]{1,2}(?:/|$)')
+      or
+      item.path | string
+      is match(
+        '^/(?:$|boot(?:/|$)|dev(?:/|$)|etc(?:/|$)|proc(?:/|$)|root(?:/|$)|run(?:/|$)|sys(?:/|$)|var/?$|var/run(?:/|$)|var/lib/?$|var/lib/(?:docker|containers|containerd|podman)(?:/|$))'
+      )
+      or
+      item.path | string
+      is search('(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)')
+  loop:
+    - name: qbittorrent_data_path
+      path: "{{ qbittorrent_data_path }}"
+    - name: qbittorrent_download_path
+      path: "{{ qbittorrent_download_path }}"
+
+- name: Fail if qBittorrent download destination is unsafe or overlaps support mounts
+  ansible.builtin.fail:
+    msg: >-
+      qbittorrent_download_bind_path must be an absolute canonical application
+      path which does not overlap /config, /etc/resolv.conf, or /run in
+      container-network mode.
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      qbittorrent_download_bind_path | string is not match('^/')
+      or qbittorrent_download_bind_path | string is not match('^/(?!/)[^,\r\n]+$')
+      or '//' in (qbittorrent_download_bind_path | string)
+      or
+      qbittorrent_download_bind_path | string
+      is search('(?:^|/)[.]{1,2}(?:/|$)')
+      or
+      qbittorrent_download_bind_path | string
+      is match('^/(?:$|config|dev|etc|proc|run|sys)(?:/|$)')
 
 - name: Fail if qBittorrent Traefik network is not defined in container-network mode
   ansible.builtin.fail:
@@ -244,19 +404,20 @@
   ansible.builtin.fail:
     msg: >-
       qbittorrent_container_additional_volumes must not expose Docker sockets,
-      the host root, /proc, /sys, or /dev to qBittorrent in container-network
-      mode (`{{ item.src | default('') }}` -> `{{ item.dst | default('') }}`).
+      host-control trees, or the enforced /config and /etc mounts to
+      qBittorrent in container-network mode
+      (`{{ item.src | default('') }}` -> `{{ item.dst | default('') }}`).
   when:
     - qbittorrent_container_network_mode == 'container'
     - >-
       item.src | default('') | string
-      is match('^/(?:$|run/?$|var/?$|var/run/?$|var/lib/?$|var/lib/docker(?:/|$)|proc(?:/|$)|sys(?:/|$)|dev(?:/|$))')
+      is match('^/(?:$|bin(?:/|$)|boot(?:/|$)|dev(?:/|$)|etc(?:/|$)|lib(?:32|64)?(?:/|$)|proc(?:/|$)|root(?:/|$)|run(?:/|$)|sbin(?:/|$)|sys(?:/|$)|usr(?:/|$)|var/?$|var/run(?:/|$)|var/lib/?$|var/lib/(?:docker|containers|containerd|podman)(?:/|$))')
       or
       item.src | default('') | string
       is search('(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)')
       or
       item.dst | default('') | string
-      is match('^/(?:$|run/?$|var/?$|var/run/?$|var/lib/?$|var/lib/docker(?:/|$)|proc(?:/|$)|sys(?:/|$)|dev(?:/|$))')
+      is match('^/(?:$|config(?:/|$)|dev(?:/|$)|etc(?:/|$)|proc(?:/|$)|run(?:/|$)|sys(?:/|$)|var/?$|var/run(?:/|$)|var/lib/?$|var/lib/(?:docker|containers|containerd|podman)(?:/|$))')
       or
       item.dst | default('') | string
       is search('(?:^|/)(?:docker|podman|containerd|crio)[.]sock(?:/|$)')
@@ -283,8 +444,53 @@
     - >-
       item.src | default('') | string is not match('^/')
       or
+      item.src | default('') | string
+      is not match('^/(?!/)[^,\r\n]+$')
+      or
+      item.src | default('') | string is search('[\x00-\x1f\x7f]')
+      or '//' in (item.src | default('') | string)
+      or
       item.src | default('') | string is search('(?:^|/)[.]{1,2}(?:/|$)')
   loop: "{{ qbittorrent_container_additional_volumes }}"
+
+- name: Resolve qBittorrent container-network bind sources
+  when:
+    - qbittorrent_container_network_mode == 'container'
+    - >-
+      (
+        item.type
+        | default(
+          'bind'
+          if '/' in (item.src | default('') | string)
+          else 'volume'
+        )
+      )
+      == 'bind'
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/readlink
+      - --canonicalize-missing
+      - --
+      - "{{ item.src }}"
+  loop: "{{ qbittorrent_container_additional_volumes }}"
+  register: qbittorrent_container_network_bind_source_resolution_results
+  changed_when: false
+
+- name: Require qBittorrent container-network bind sources to be canonical
+  when: not item.skipped | default(false)
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout_lines | length == 1
+      - item.stdout | trim == item.item.src
+    fail_msg: >-
+      qBittorrent bind source `{{ item.item.src }}` must not contain or
+      currently traverse a symbolic link in container-network mode.
+  loop: >-
+    {{
+      qbittorrent_container_network_bind_source_resolution_results.results
+      | default([])
+    }}
 
 - name: Fail if a qBittorrent container-network volume destination is unsafe
   ansible.builtin.fail:
@@ -297,22 +503,35 @@
     - >-
       item.dst | default('') | string is not match('^/')
       or
+      item.dst | default('') | string
+      is not match('^/(?!/)[^,\r\n]+$')
+      or
+      item.dst | default('') | string is search('[\x00-\x1f\x7f]')
+      or '//' in (item.dst | default('') | string)
+      or
       item.dst | default('') | string is search('(?:^|/)[.]{1,2}(?:/|$)')
+      or (item.dst | default('') | string).endswith('/')
   loop: "{{ qbittorrent_container_additional_volumes }}"
 
-- name: Fail if an additional volume replaces the enforced qBittorrent resolver
+- name: Fail if an additional volume overlaps the qBittorrent download mount
   ansible.builtin.fail:
     msg: >-
-      qbittorrent_container_additional_volumes must not target
-      /etc/resolv.conf in container-network mode. Configure the enforced
-      read-only resolver source through
-      qbittorrent_container_network_container_resolv_conf_path instead
-      (`{{ item.src | default('') }}` -> `{{ item.dst | default('') }}`).
+      qbittorrent_container_additional_volumes must not duplicate, contain, or
+      be contained by qbittorrent_download_bind_path in container-network mode
+      (`{{ item.dst | default('') }}` overlaps
+      `{{ qbittorrent_download_bind_path }}`).
   when:
     - qbittorrent_container_network_mode == 'container'
     - >-
-      item.dst | default('') | string
-      is match('^/+etc/+resolv[.]conf/*$')
+      (item.dst | default('') | string) == qbittorrent_download_bind_path
+      or
+      (item.dst | default('') | string).startswith(
+        qbittorrent_download_bind_path + '/'
+      )
+      or
+      qbittorrent_download_bind_path.startswith(
+        (item.dst | default('') | string) + '/'
+      )
   loop: "{{ qbittorrent_container_additional_volumes }}"
 
 - name: Fail if qBittorrent container-network mode conflicts with independently managed container settings

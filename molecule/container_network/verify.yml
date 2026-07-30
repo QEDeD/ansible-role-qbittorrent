@@ -1,0 +1,437 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Verify qBittorrent container-network lifecycle mechanics
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    qbittorrent_synthetic_owner_name: qbittorrent-synthetic-owner
+    qbittorrent_synthetic_owner_contract_label: io.mash.test.fail-closed-contract
+    qbittorrent_synthetic_owner_contract_value: synthetic-v1
+  tasks:
+    - name: Wait for qBittorrent to become active through the owner's Wants relationship
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_container_network_initial_state
+      changed_when: false
+      retries: 30
+      delay: 1
+      until: qbittorrent_container_network_initial_state.stdout | trim == 'active'
+
+    - name: Inspect the initial synthetic namespace owner
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.Id}}|{{.Name}}|{{.State.Health.Status}}|{{index .Config.Labels \"io.mash.test.fail-closed-contract\"}}{% endraw %}"
+          - "{{ qbittorrent_synthetic_owner_name }}"
+      register: qbittorrent_synthetic_owner_initial_inspect
+      changed_when: false
+
+    - name: Inspect the initial qBittorrent namespace binding
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.Id}}|{{.Name}}|{{.HostConfig.NetworkMode}}|{{index .Config.Labels \"io.mash.qbittorrent.owner\"}}{% endraw %}"
+          - qbittorrent
+      register: qbittorrent_container_network_initial_inspect
+      changed_when: false
+
+    - name: Record initial container identities
+      ansible.builtin.set_fact:
+        qbittorrent_synthetic_owner_initial_fields: "{{ qbittorrent_synthetic_owner_initial_inspect.stdout.split('|') }}"
+        qbittorrent_container_network_initial_fields: "{{ qbittorrent_container_network_initial_inspect.stdout.split('|') }}"
+
+    - name: Assert initial owner contract and exact-ID namespace binding
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_synthetic_owner_initial_fields | length == 4
+          - qbittorrent_synthetic_owner_initial_fields[0] is match('^[a-f0-9]{64}$')
+          - qbittorrent_synthetic_owner_initial_fields[1] == '/' + qbittorrent_synthetic_owner_name
+          - qbittorrent_synthetic_owner_initial_fields[2] == 'healthy'
+          - qbittorrent_synthetic_owner_initial_fields[3] == qbittorrent_synthetic_owner_contract_value
+          - qbittorrent_container_network_initial_fields | length == 4
+          - qbittorrent_container_network_initial_fields[0] is match('^[a-f0-9]{64}$')
+          - qbittorrent_container_network_initial_fields[1] == '/qbittorrent'
+          - qbittorrent_container_network_initial_fields[2] == 'container:' + qbittorrent_synthetic_owner_initial_fields[0]
+          - qbittorrent_container_network_initial_fields[3] == 'qbittorrent'
+
+    - name: Inspect qBittorrent's complete synthetic container contract
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{json .}}{% endraw %}"
+          - "{{ qbittorrent_container_network_initial_fields[0] }}"
+      register: qbittorrent_container_network_initial_contract_result
+      changed_when: false
+
+    - name: Assert qBittorrent has no independent egress or host-control surface
+      vars:
+        qbittorrent_container_network_initial_contract: >-
+          {{ qbittorrent_container_network_initial_contract_result.stdout | from_json }}
+        qbittorrent_container_network_initial_host_config: >-
+          {{ qbittorrent_container_network_initial_contract.HostConfig }}
+        qbittorrent_container_network_initial_mounts: >-
+          {{ qbittorrent_container_network_initial_contract.Mounts }}
+      ansible.builtin.assert:
+        that:
+          - >-
+            qbittorrent_container_network_initial_host_config.NetworkMode
+            ==
+            'container:' + qbittorrent_synthetic_owner_initial_fields[0]
+          - >-
+            qbittorrent_container_network_initial_host_config.PortBindings
+            | default({}, true)
+            | length
+            == 0
+          - not qbittorrent_container_network_initial_host_config.PublishAllPorts | bool
+          - >-
+            qbittorrent_container_network_initial_host_config.CapAdd
+            | intersect(['NET_ADMIN', 'NET_RAW'])
+            | length
+            == 0
+          - >-
+            qbittorrent_container_network_initial_mounts
+            | map(attribute='Source')
+            | select('search', '(?:docker|podman|containerd|crio)[.]sock')
+            | list
+            | length
+            == 0
+          - >-
+            qbittorrent_container_network_initial_contract.Config.Env
+            | select('match', '^(?:OPENVPN|WIREGUARD|VPN_)')
+            | list
+            | length
+            == 0
+
+    - name: Stop the synthetic owner to exercise BindsTo
+      ansible.builtin.systemd_service:
+        name: qbittorrent-synthetic-owner.service
+        state: stopped
+
+    - name: Wait for qBittorrent to stop with its owner
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_container_network_stopped_state
+      changed_when: false
+      failed_when: false
+      retries: 20
+      delay: 1
+      until: qbittorrent_container_network_stopped_state.stdout | trim in ['inactive', 'failed']
+
+    - name: Create a contract-labelled but unhealthy synthetic owner
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - run
+          - --detach
+          - --rm
+          - --name
+          - "{{ qbittorrent_synthetic_owner_name }}"
+          - --label
+          - "{{ qbittorrent_synthetic_owner_contract_label }}={{ qbittorrent_synthetic_owner_contract_value }}"
+          - --health-cmd
+          - "false"
+          - --health-interval
+          - 1s
+          - --health-retries
+          - "1"
+          - --network
+          - none
+          - "{{ qbittorrent_synthetic_owner_image }}"
+          - sleep
+          - infinity
+      register: qbittorrent_unhealthy_owner_create_result
+      changed_when: true
+
+    - name: Wait for the contract-labelled owner to become unhealthy
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.State.Health.Status}}{% endraw %}"
+          - "{{ qbittorrent_unhealthy_owner_create_result.stdout | trim }}"
+      register: qbittorrent_unhealthy_owner_health
+      changed_when: false
+      retries: 10
+      delay: 1
+      until: qbittorrent_unhealthy_owner_health.stdout | trim == 'unhealthy'
+
+    - name: Ask the helper to prepare against the unhealthy owner
+      ansible.builtin.command:
+        argv:
+          - /etc/systemd/system/qbittorrent-container-network-helper
+          - prepare
+      register: qbittorrent_unhealthy_owner_prepare_result
+      changed_when: false
+      failed_when: false
+
+    - name: Query qBittorrent after unhealthy-owner rejection
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - name=^/qbittorrent$
+      register: qbittorrent_unhealthy_owner_qbittorrent_query
+      changed_when: false
+
+    - name: Assert unhealthy-owner rejection
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_unhealthy_owner_prepare_result.rc != 0
+          - qbittorrent_unhealthy_owner_qbittorrent_query.stdout | trim | length == 0
+
+    - name: Remove only the captured unhealthy owner ID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - rm
+          - --force
+          - "{{ qbittorrent_unhealthy_owner_create_result.stdout | trim }}"
+      changed_when: true
+
+    - name: Create a healthy owner with the wrong contract label
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - run
+          - --detach
+          - --rm
+          - --name
+          - "{{ qbittorrent_synthetic_owner_name }}"
+          - --label
+          - "{{ qbittorrent_synthetic_owner_contract_label }}=wrong-contract"
+          - --health-cmd
+          - "true"
+          - --health-interval
+          - 1s
+          - --network
+          - none
+          - "{{ qbittorrent_synthetic_owner_image }}"
+          - sleep
+          - infinity
+      register: qbittorrent_wrong_contract_owner_create_result
+      changed_when: true
+
+    - name: Wait for the wrong-contract owner to become healthy
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.State.Health.Status}}{% endraw %}"
+          - "{{ qbittorrent_wrong_contract_owner_create_result.stdout | trim }}"
+      register: qbittorrent_wrong_contract_owner_health
+      changed_when: false
+      retries: 10
+      delay: 1
+      until: qbittorrent_wrong_contract_owner_health.stdout | trim == 'healthy'
+
+    - name: Ensure the helper runtime directory exists for the direct negative check
+      ansible.builtin.file:
+        path: /run/qbittorrent-container-network
+        state: directory
+        mode: "0700"
+
+    - name: Ask the helper to prepare against the wrong owner contract
+      ansible.builtin.command:
+        argv:
+          - /etc/systemd/system/qbittorrent-container-network-helper
+          - prepare
+      register: qbittorrent_wrong_contract_prepare_result
+      changed_when: false
+      failed_when: false
+
+    - name: Prove the wrong owner contract was rejected without creating qBittorrent
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - name=^/qbittorrent$
+      register: qbittorrent_wrong_contract_qbittorrent_query
+      changed_when: false
+      failed_when: false
+
+    - name: Assert wrong-contract rejection
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_wrong_contract_prepare_result.rc != 0
+          - qbittorrent_wrong_contract_qbittorrent_query.rc == 0
+          - qbittorrent_wrong_contract_qbittorrent_query.stdout | trim | length == 0
+
+    - name: Remove only the captured wrong-contract owner ID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - rm
+          - --force
+          - "{{ qbittorrent_wrong_contract_owner_create_result.stdout | trim }}"
+      changed_when: true
+
+    - name: Restart the managed synthetic owner
+      ansible.builtin.systemd_service:
+        name: qbittorrent-synthetic-owner.service
+        state: started
+
+    - name: Wait for qBittorrent to recover against the recreated owner
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_container_network_recreated_state
+      changed_when: false
+      retries: 30
+      delay: 1
+      until: qbittorrent_container_network_recreated_state.stdout | trim == 'active'
+
+    - name: Inspect the recreated synthetic namespace owner
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.Id}}{% endraw %}"
+          - "{{ qbittorrent_synthetic_owner_name }}"
+      register: qbittorrent_synthetic_owner_recreated_inspect
+      changed_when: false
+
+    - name: Inspect qBittorrent after owner recreation
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.HostConfig.NetworkMode}}{% endraw %}"
+          - qbittorrent
+      register: qbittorrent_container_network_recreated_inspect
+      changed_when: false
+
+    - name: Assert qBittorrent was rebound to a new immutable owner ID
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_synthetic_owner_recreated_inspect.stdout | trim is match('^[a-f0-9]{64}$')
+          - qbittorrent_synthetic_owner_recreated_inspect.stdout | trim != qbittorrent_synthetic_owner_initial_fields[0]
+          - >-
+            qbittorrent_container_network_recreated_inspect.stdout | trim
+            ==
+            'container:' + (qbittorrent_synthetic_owner_recreated_inspect.stdout | trim)
+
+    - name: Stop the synthetic owner before the replacement-safety check
+      ansible.builtin.systemd_service:
+        name: qbittorrent-synthetic-owner.service
+        state: stopped
+
+    - name: Create an untracked container with the stable qBittorrent name
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - create
+          - --name
+          - qbittorrent
+          - "{{ qbittorrent_synthetic_owner_image }}"
+          - sleep
+          - infinity
+      register: qbittorrent_foreign_replacement_create_result
+      changed_when: true
+
+    - name: Invoke the helper cleanup against the foreign exact-name replacement
+      ansible.builtin.command:
+        argv:
+          - /etc/systemd/system/qbittorrent-container-network-helper
+          - cleanup
+      register: qbittorrent_foreign_replacement_cleanup_result
+      changed_when: false
+      failed_when: false
+
+    - name: Inspect the captured foreign replacement ID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - inspect
+          - "--format={% raw %}{{.Id}}|{{.Name}}{% endraw %}"
+          - "{{ qbittorrent_foreign_replacement_create_result.stdout | trim }}"
+      register: qbittorrent_foreign_replacement_inspect
+      changed_when: false
+
+    - name: Assert helper cleanup retained the later same-name replacement
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_foreign_replacement_cleanup_result.rc != 0
+          - >-
+            qbittorrent_foreign_replacement_inspect.stdout | trim
+            ==
+            (qbittorrent_foreign_replacement_create_result.stdout | trim)
+            + '|/qbittorrent'
+
+    - name: Stop qBittorrent's failed restart loop
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - stop
+          - qbittorrent.service
+      changed_when: false
+      failed_when: false
+
+    - name: Remove only the captured foreign replacement ID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/docker
+          - container
+          - rm
+          - --force
+          - "{{ qbittorrent_foreign_replacement_create_result.stdout | trim }}"
+      changed_when: true
+
+    - name: Reset qBittorrent's expected failed state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - reset-failed
+          - qbittorrent.service
+      changed_when: false
+      failed_when: false
+
+    - name: Start qBittorrent after removing the test-owned replacement
+      ansible.builtin.systemd_service:
+        name: qbittorrent.service
+        state: started
+
+    - name: Wait for final qBittorrent recovery
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - qbittorrent.service
+      register: qbittorrent_container_network_final_state
+      changed_when: false
+      retries: 30
+      delay: 1
+      until: qbittorrent_container_network_final_state.stdout | trim == 'active'

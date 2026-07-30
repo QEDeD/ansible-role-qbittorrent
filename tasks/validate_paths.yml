@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Validate qBittorrent primary host paths lexically
+  ansible.builtin.assert:
+    that:
+      - item.path | type_debug == 'str'
+      - item.path is match('^/(?!/)[^,\r\n]+$')
+      - "'//' not in item.path"
+      - "'.' not in item.path.split('/')"
+      - "'..' not in item.path.split('/')"
+      - not item.path.endswith('/')
+      - item.path is not search('[\x00-\x1f\x7f]')
+      - >-
+        item.path
+        is not match(
+          '^/(?:$|bin(?:/|$)|boot(?:/|$)|dev(?:/|$)|etc(?:/|$)|home/?$|lib(?:32|64)?(?:/|$)|media/?$|mnt/?$|opt/?$|proc(?:/|$)|root(?:/|$)|run(?:/|$)|sbin(?:/|$)|srv/?$|sys(?:/|$)|tmp/?$|usr(?:/|$)|var/?$|var/(?:cache|log|run|spool|tmp)(?:/|$)|var/lib/?$|var/lib/(?:containers|containerd|docker|podman)(?:/|$))'
+        )
+      - >-
+        item.path
+        is not search(
+          '(?:^|/)(?:containerd|crio|docker|podman)[.]sock(?:/|$)'
+        )
+    fail_msg: >-
+      {{ item.name }} must be one canonical, dedicated application-data path.
+      Repeated separators, dot segments, control characters, container-engine
+      sockets, and host-control trees are not allowed (`{{ item.path }}`).
+  loop:
+    - name: qbittorrent_base_path
+      path: "{{ qbittorrent_base_path }}"
+    - name: qbittorrent_data_path
+      path: "{{ qbittorrent_data_path }}"
+    - name: qbittorrent_download_path
+      path: "{{ qbittorrent_download_path }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Resolve qBittorrent primary host paths without following them for mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/readlink
+      - --canonicalize-missing
+      - --
+      - "{{ item.path }}"
+  loop:
+    - name: qbittorrent_base_path
+      path: "{{ qbittorrent_base_path }}"
+    - name: qbittorrent_data_path
+      path: "{{ qbittorrent_data_path }}"
+    - name: qbittorrent_download_path
+      path: "{{ qbittorrent_download_path }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: qbittorrent_primary_path_resolution_results
+  changed_when: false
+
+- name: Require qBittorrent primary host paths to be canonical and symlink-free
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout_lines | length == 1
+      - item.stdout | trim == item.item.path
+    fail_msg: >-
+      {{ item.item.name }} must not contain or traverse a symlink and must
+      resolve to itself before the role can change ownership or mount it
+      (`{{ item.item.path }}`).
+  loop: "{{ qbittorrent_primary_path_resolution_results.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Inspect existing qBittorrent primary path objects without following links
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop:
+    - name: qbittorrent_base_path
+      path: "{{ qbittorrent_base_path }}"
+    - name: qbittorrent_data_path
+      path: "{{ qbittorrent_data_path }}"
+    - name: qbittorrent_download_path
+      path: "{{ qbittorrent_download_path }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: qbittorrent_primary_path_stat_results
+
+- name: Reject a qBittorrent primary path which is itself a symbolic link
+  when: item.stat.exists | bool
+  ansible.builtin.assert:
+    that:
+      - not item.stat.islnk | default(false) | bool
+    fail_msg: >-
+      {{ item.item.name }} is a symbolic link. The role will not change its
+      target's ownership or use it as a primary bind source.
+  loop: "{{ qbittorrent_primary_path_stat_results.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Resolve qBittorrent managed support-file paths before mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/readlink
+      - --canonicalize-missing
+      - --
+      - "{{ item.path }}"
+  loop:
+    - name: qBittorrent environment file
+      path: "{{ qbittorrent_base_path }}/env"
+    - name: qBittorrent labels file
+      path: "{{ qbittorrent_base_path }}/labels"
+  loop_control:
+    label: "{{ item.name }}"
+  register: qbittorrent_support_path_resolution_results
+  changed_when: false
+
+- name: Require qBittorrent managed support-file paths to be canonical
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - item.stdout_lines | length == 1
+      - item.stdout | trim == item.item.path
+    fail_msg: >-
+      {{ item.item.name }} must not contain or traverse a symbolic link before
+      the role overwrites or removes it.
+  loop: "{{ qbittorrent_support_path_resolution_results.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Inspect existing qBittorrent managed support files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    follow: false
+  loop:
+    - name: qBittorrent environment file
+      path: "{{ qbittorrent_base_path }}/env"
+    - name: qBittorrent labels file
+      path: "{{ qbittorrent_base_path }}/labels"
+  loop_control:
+    label: "{{ item.name }}"
+  register: qbittorrent_support_file_stats
+
+- name: Require existing qBittorrent managed support files to be real files
+  when: item.stat.exists | bool
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg | default(false) | bool
+      - not item.stat.islnk | default(false) | bool
+    fail_msg: >-
+      {{ item.item.name }} is a symbolic link or unexpected object. It will not
+      be overwritten or removed.
+  loop: "{{ qbittorrent_support_file_stats.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

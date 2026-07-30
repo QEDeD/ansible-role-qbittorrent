@@ -43,11 +43,30 @@ pip3 install -r ./molecule/requirements.txt
 
 ## Scenarios
 
-Currently there is one testing scenario available.
+There are two testing scenarios available.
 
 ### `default`
 
 Tests a standard qBittorrent installation.
+
+### `container_network`
+
+Tests the container-network helper against a synthetic, labelled, healthy
+namespace owner. It covers identity and contract-label checks, immutable-ID
+cleanup, systemd stop coupling, owner recreation, and preservation of an
+untracked same-name replacement.
+
+Its `side_effect` phase also defines both container-to-managed and
+managed-to-container transitions. It deliberately leaves a role-owned
+persistent quiesce behind after removing the main unit, reruns the role, and
+checks that the retry adopts the guard, restores the final unit, releases only
+the guard, and returns to exact-ID namespace binding. This phase is intentionally
+separate from convergence and idempotence so interrupted-state recovery is an
+explicit lifecycle contract.
+
+The synthetic owner does not establish a VPN tunnel or firewall. This scenario
+does not test, and must not be cited as evidence for, VPN kill-switch or
+fail-closed Internet-egress behavior.
 
 ## Running
 
@@ -55,6 +74,12 @@ By default it is configured to run the scenarios on Ubuntu 26.04.
 
 ```bash
 molecule test --scenario-name default
+```
+
+To exercise the container-network lifecycle mechanics:
+
+```bash
+molecule test --scenario-name container_network
 ```
 
 You can utilize other distributions by setting one to the `MOLECULE_DISTRO` environment variable:

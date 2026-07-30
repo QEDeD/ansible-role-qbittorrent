@@ -1,0 +1,261 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Inspect the finalized qBittorrent unit file
+  ansible.builtin.stat:
+    path: >-
+      {{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service
+    follow: false
+  register: qbittorrent_final_unit_stat
+
+- name: Require the finalized qBittorrent unit to be a real file
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_final_unit_stat.stat.exists | bool
+      - qbittorrent_final_unit_stat.stat.isreg | bool
+      - not qbittorrent_final_unit_stat.stat.islnk | default(false) | bool
+    fail_msg: >-
+      The finalized qBittorrent unit is absent or is not a real file. The
+      persistent quiesce will be restored.
+
+- name: Inspect the finalized qBittorrent load state
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=LoadState
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_load_state_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent fragment path
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=FragmentPath
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_fragment_path_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent service type
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=Type
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_service_type_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent restart policy
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=Restart
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_restart_policy_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent manual-start policy
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=RefuseManualStart
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_manual_start_policy_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent drop-in paths
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=DropInPaths
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_dropin_paths_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent pre-start commands
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecStartPre
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_pre_start_commands_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent start command
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecStart
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_start_command_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent stop command
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecStop
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_stop_command_result
+  changed_when: false
+
+- name: Inspect the finalized qBittorrent post-stop command
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecStopPost
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_post_stop_command_result
+  changed_when: false
+
+- name: Inspect other finalized qBittorrent lifecycle commands
+  ansible.builtin.command:
+    argv:
+      - "{{ qbittorrent_systemd_systemctl_command }}"
+      - show
+      - --property=ExecCondition
+      - --property=ExecStartPost
+      - --property=ExecReload
+      - --value
+      - "{{ qbittorrent_identifier }}.service"
+  register: qbittorrent_final_other_commands_result
+  changed_when: false
+
+- name: Prove the finalized qBittorrent unit has the intended lifecycle
+  vars:
+    qbittorrent_final_unit_path: >-
+      {{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}.service
+    qbittorrent_final_helper_path: >-
+      {{ devture_systemd_docker_base_systemd_path }}/{{ qbittorrent_identifier }}-container-network-helper
+    qbittorrent_final_expected_pre_start_paths: >-
+      {{
+        (
+          [qbittorrent_final_helper_path, qbittorrent_final_helper_path]
+          if qbittorrent_container_network_mode == 'container'
+          else
+          (
+            [devture_systemd_docker_base_host_command_sh]
+            + [devture_systemd_docker_base_host_command_docker]
+            + (
+              [devture_systemd_docker_base_host_command_docker]
+              * (qbittorrent_container_additional_networks | length)
+            )
+          )
+        )
+      }}
+    qbittorrent_final_expected_start_path: >-
+      {{
+        qbittorrent_final_helper_path
+        if qbittorrent_container_network_mode == 'container'
+        else devture_systemd_docker_base_host_command_docker
+      }}
+    qbittorrent_final_expected_stop_paths: >-
+      {{
+        (
+          [qbittorrent_final_helper_path]
+          if qbittorrent_container_network_mode == 'container'
+          else
+          [
+            devture_systemd_docker_base_host_command_sh,
+            devture_systemd_docker_base_host_command_sh
+          ]
+        )
+      }}
+    qbittorrent_final_expected_post_stop_paths: >-
+      {{
+        [qbittorrent_final_helper_path]
+        if qbittorrent_container_network_mode == 'container'
+        else []
+      }}
+    qbittorrent_final_expected_start_argv: >-
+      {{
+        (
+          qbittorrent_final_helper_path
+          if qbittorrent_container_network_mode == 'container'
+          else devture_systemd_docker_base_host_command_docker
+        )
+        + ' start'
+        + (
+          ''
+          if qbittorrent_container_network_mode == 'container'
+          else ' --attach ' + qbittorrent_identifier
+        )
+      }}
+    qbittorrent_final_quiesce_dropin_path: >-
+      /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+  ansible.builtin.assert:
+    that:
+      - qbittorrent_final_load_state_result.stdout | trim == 'loaded'
+      - qbittorrent_final_fragment_path_result.stdout | trim == qbittorrent_final_unit_path
+      - qbittorrent_final_service_type_result.stdout | trim == 'simple'
+      - qbittorrent_final_restart_policy_result.stdout | trim == 'always'
+      - qbittorrent_final_manual_start_policy_result.stdout | trim == 'no'
+      - >-
+        qbittorrent_final_quiesce_dropin_path
+        not in qbittorrent_final_dropin_paths_result.stdout.split()
+      - >-
+        (
+          qbittorrent_final_pre_start_commands_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+        )
+        == qbittorrent_final_expected_pre_start_paths
+      - >-
+        (
+          qbittorrent_final_start_command_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+        )
+        == [qbittorrent_final_expected_start_path]
+      - >-
+        (
+          qbittorrent_final_start_command_result.stdout
+          | regex_findall('argv\\[\\]=([^;]+?)\\s*;')
+          | map('trim')
+          | list
+          | last
+        )
+        == qbittorrent_final_expected_start_argv
+      - >-
+        (
+          qbittorrent_final_stop_command_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+        )
+        == qbittorrent_final_expected_stop_paths
+      - >-
+        (
+          qbittorrent_final_post_stop_command_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+        )
+        == qbittorrent_final_expected_post_stop_paths
+      - >-
+        (
+          qbittorrent_final_other_commands_result.stdout
+          | regex_findall('path=([^ ;}]+)')
+          | length
+        )
+        == 0
+    fail_msg: >-
+      The effective finalized qBittorrent unit does not exactly match the
+      intended mode-specific lifecycle. The persistent quiesce will be
+      restored.

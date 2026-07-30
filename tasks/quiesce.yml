@@ -1,0 +1,473 @@
+# SPDX-FileCopyrightText: 2026 MASH project contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+---
+- name: Initialize qBittorrent quiesce state
+  ansible.builtin.set_fact:
+    qbittorrent_quiesce_applied: >-
+      {{ qbittorrent_existing_quiesce_dropin_owned | default(false) | bool }}
+    qbittorrent_quiesce_container_id: ""
+    qbittorrent_quiesce_container_authorized: false
+
+- name: Quiesce the existing qBittorrent unit before lifecycle mutation
+  when: qbittorrent_existing_unit_stat.stat.exists | bool
+  block:
+    - name: Capture the exact pre-quiesce qBittorrent container
+      ansible.builtin.command:
+        argv:
+          - "{{ devture_systemd_docker_base_host_command_docker }}"
+          - container
+          - ls
+          - --all
+          - --no-trunc
+          - --filter
+          - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+          - "--format={{ '{{' }}.ID{{ '}}' }}|{{ '{{' }}.Names{{ '}}' }}"
+      register: qbittorrent_pre_quiesce_container_query_result
+      changed_when: false
+
+    - name: Validate the exact pre-quiesce qBittorrent capture
+      ansible.builtin.assert:
+        that:
+          - >-
+            qbittorrent_pre_quiesce_container_query_result.stdout
+            | trim
+            | length
+            == 0
+            or
+            (
+              qbittorrent_pre_quiesce_container_query_result.stdout_lines
+              | length
+              == 1
+              and
+              qbittorrent_pre_quiesce_container_query_result.stdout_lines[0]
+              .split('|')
+              | length
+              == 2
+              and
+              qbittorrent_pre_quiesce_container_query_result.stdout_lines[0]
+              .split('|')[0]
+              is match('^[a-f0-9]{64}$')
+              and
+              qbittorrent_pre_quiesce_container_query_result.stdout_lines[0]
+              .split('|')[1]
+              == qbittorrent_identifier
+            )
+        fail_msg: >-
+          The exact qBittorrent Docker identity is ambiguous. No persistent
+          quiesce or lifecycle mutation has been applied.
+
+    - name: Record the immutable pre-quiesce qBittorrent container ID
+      when: qbittorrent_pre_quiesce_container_query_result.stdout_lines | length == 1
+      ansible.builtin.set_fact:
+        qbittorrent_quiesce_container_id: >-
+          {{
+            qbittorrent_pre_quiesce_container_query_result.stdout_lines[0]
+            .split('|')[0]
+          }}
+
+    - name: Inspect the immutable pre-quiesce qBittorrent container
+      when: qbittorrent_quiesce_container_id | length > 0
+      ansible.builtin.command:
+        argv:
+          - "{{ devture_systemd_docker_base_host_command_docker }}"
+          - container
+          - inspect
+          - "--format={{ '{{' }}json .{{ '}}' }}"
+          - "{{ qbittorrent_quiesce_container_id }}"
+      register: qbittorrent_pre_quiesce_container_inspect_result
+      changed_when: false
+      no_log: true
+
+    - name: Parse the immutable pre-quiesce qBittorrent container
+      when: qbittorrent_quiesce_container_id | length > 0
+      ansible.builtin.set_fact:
+        qbittorrent_pre_quiesce_container_inspect: >-
+          {{ qbittorrent_pre_quiesce_container_inspect_result.stdout | from_json }}
+      no_log: true
+
+    - name: Classify the immutable pre-quiesce qBittorrent container
+      when: qbittorrent_quiesce_container_id | length > 0
+      vars:
+        qbittorrent_pre_quiesce_config: >-
+          {{ qbittorrent_pre_quiesce_container_inspect.Config | default({}) }}
+        qbittorrent_pre_quiesce_host_config: >-
+          {{ qbittorrent_pre_quiesce_container_inspect.HostConfig | default({}) }}
+        qbittorrent_pre_quiesce_labels: >-
+          {{ qbittorrent_pre_quiesce_config.Labels | default({}, true) }}
+        qbittorrent_pre_quiesce_mounts: >-
+          {{ qbittorrent_pre_quiesce_container_inspect.Mounts | default([], true) }}
+        qbittorrent_pre_quiesce_destinations: >-
+          {{
+            qbittorrent_pre_quiesce_mounts
+            | map(attribute='Destination')
+            | list
+          }}
+        qbittorrent_pre_quiesce_has_required_mounts: >-
+          {{
+            (
+              qbittorrent_pre_quiesce_mounts
+              | selectattr('Type', 'equalto', 'bind')
+              | selectattr('Source', 'equalto', qbittorrent_data_path)
+              | selectattr('Destination', 'equalto', '/config')
+              | list
+              | length
+            )
+            == 1
+            and
+            (
+              qbittorrent_pre_quiesce_mounts
+              | selectattr('Type', 'equalto', 'bind')
+              | selectattr('Source', 'equalto', qbittorrent_download_path)
+              | selectattr(
+                'Destination',
+                'equalto',
+                qbittorrent_download_bind_path
+              )
+              | list
+              | length
+            )
+            == 1
+          }}
+        qbittorrent_pre_quiesce_is_semantic_legacy: >-
+          {{
+            (
+              qbittorrent_pre_quiesce_config.Image | default('')
+              == qbittorrent_container_image
+              or
+              (
+                qbittorrent_pre_quiesce_config.Image | default('')
+              ).startswith(
+                qbittorrent_container_image.rsplit(':', 1)[0] + ':'
+              )
+            )
+            and
+            (
+              qbittorrent_pre_quiesce_config.User | default('')
+              == (qbittorrent_uid | string) + ':' + (qbittorrent_gid | string)
+            )
+            and qbittorrent_pre_quiesce_host_config.AutoRemove | default(false) | bool
+            and not (qbittorrent_pre_quiesce_host_config.Privileged | default(true) | bool)
+            and
+            (qbittorrent_pre_quiesce_host_config.CapDrop | default([], true))
+            == ['ALL']
+            and
+            (
+              qbittorrent_pre_quiesce_host_config.NetworkMode | default('')
+              not in ['', 'bridge', 'default', 'host', 'none']
+            )
+            and qbittorrent_pre_quiesce_has_required_mounts | bool
+            and
+            qbittorrent_pre_quiesce_destinations
+            | intersect(
+              [
+                '/run/docker.sock',
+                '/var/run/docker.sock',
+                '/run/podman/podman.sock'
+              ]
+            )
+            | length
+            == 0
+          }}
+      ansible.builtin.set_fact:
+        qbittorrent_quiesce_container_authorized: >-
+          {{
+            qbittorrent_pre_quiesce_container_inspect.Id
+            == qbittorrent_quiesce_container_id
+            and
+            qbittorrent_pre_quiesce_container_inspect.Name
+            == '/' + qbittorrent_identifier
+            and
+            (
+              qbittorrent_pre_quiesce_labels.get(
+                'io.mash.qbittorrent.owner',
+                ''
+              )
+              == qbittorrent_identifier
+              or qbittorrent_pre_quiesce_is_semantic_legacy | bool
+            )
+          }}
+      no_log: true
+
+    - name: Require ownership of the immutable pre-quiesce qBittorrent container
+      when: qbittorrent_quiesce_container_id | length > 0
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_quiesce_container_authorized | bool
+        fail_msg: >-
+          The exact-name qBittorrent container is neither role-labelled nor a
+          narrowly attested legacy role container. It has not been stopped,
+          removed, or made a lifecycle target.
+
+    - name: Inspect the persistent qBittorrent drop-in directory
+      ansible.builtin.stat:
+        path: "/etc/systemd/system/{{ qbittorrent_identifier }}.service.d"
+        follow: false
+      register: qbittorrent_quiesce_dropin_directory_stat
+
+    - name: Require a safe persistent qBittorrent drop-in directory
+      when: qbittorrent_quiesce_dropin_directory_stat.stat.exists | bool
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_quiesce_dropin_directory_stat.stat.isdir | bool
+          - not qbittorrent_quiesce_dropin_directory_stat.stat.islnk | default(false) | bool
+        fail_msg: >-
+          The persistent qBittorrent drop-in path is not a real directory.
+          No lifecycle mutation has been applied.
+
+    - name: Inspect an existing qBittorrent quiesce drop-in
+      ansible.builtin.stat:
+        path: >-
+          /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+        follow: false
+      register: qbittorrent_existing_quiesce_dropin_stat
+
+    - name: Require an existing qBittorrent quiesce drop-in path to be safe
+      when: qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_existing_quiesce_dropin_stat.stat.isreg | bool
+          - not qbittorrent_existing_quiesce_dropin_stat.stat.islnk | default(false) | bool
+        fail_msg: >-
+          The reserved qBittorrent quiesce drop-in path is not a real file. It
+          has not been read or overwritten.
+
+    - name: Read an existing qBittorrent quiesce drop-in
+      when: qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool
+      ansible.builtin.slurp:
+        src: >-
+          /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+      register: qbittorrent_existing_quiesce_dropin_content
+
+    - name: Require an existing qBittorrent quiesce drop-in to be role-owned
+      when: qbittorrent_existing_quiesce_dropin_stat.stat.exists | bool
+      ansible.builtin.assert:
+        that:
+          - >-
+            '# MASH-Role=qBittorrent-quiesce'
+            in (
+              qbittorrent_existing_quiesce_dropin_content.content
+              | b64decode
+            )
+        fail_msg: >-
+          The reserved qBittorrent quiesce drop-in path is occupied by an
+          unrecognized object. It has not been overwritten.
+
+    - name: Ensure the persistent qBittorrent drop-in directory exists
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ qbittorrent_identifier }}.service.d"
+        state: directory
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Install the persistent fail-closed qBittorrent quiesce drop-in
+      ansible.builtin.template:
+        src: "{{ role_path }}/templates/systemd/qbittorrent-quiesce.conf.j2"
+        dest: >-
+          /etc/systemd/system/{{ qbittorrent_identifier }}.service.d/zzzz-mash-fail-closed-quiesce.conf
+        mode: "0644"
+        owner: root
+        group: root
+
+    - name: Reload systemd with the inert qBittorrent lifecycle
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - daemon-reload
+      changed_when: true
+
+    - name: Verify the effective persistent qBittorrent quiesce
+      ansible.builtin.include_tasks: >-
+        {{ role_path }}/tasks/verify_quiesce_unit.yml
+
+    - name: Stop the quiesced qBittorrent unit
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - stop
+          - "{{ qbittorrent_identifier }}.service"
+      register: qbittorrent_quiesce_stop_result
+      changed_when: false
+      failed_when: false
+
+    - name: Query the quiesced qBittorrent unit state
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - is-active
+          - "{{ qbittorrent_identifier }}.service"
+      register: qbittorrent_quiesce_unit_state_result
+      changed_when: false
+      failed_when: false
+
+    - name: Kill only the qBittorrent unit processes after a failed stop
+      when:
+        - qbittorrent_quiesce_unit_state_result.stdout | trim not in ['inactive', 'failed', 'unknown']
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - kill
+          - --kill-whom=all
+          - --signal=SIGKILL
+          - "{{ qbittorrent_identifier }}.service"
+      register: qbittorrent_quiesce_kill_result
+      changed_when: qbittorrent_quiesce_kill_result.rc == 0
+      failed_when: false
+
+    - name: Stop qBittorrent again after the scoped process kill
+      when:
+        - qbittorrent_quiesce_unit_state_result.stdout | trim not in ['inactive', 'failed', 'unknown']
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - stop
+          - "{{ qbittorrent_identifier }}.service"
+      register: qbittorrent_quiesce_second_stop_result
+      changed_when: false
+      failed_when: false
+
+    - name: Prove the qBittorrent unit is inactive after quiescing
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - is-active
+          - "{{ qbittorrent_identifier }}.service"
+      register: qbittorrent_quiesce_final_unit_state_result
+      changed_when: false
+      failed_when: false
+
+    - name: Query any queued qBittorrent systemd job after quiescing
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - show
+          - --property=Job
+          - --value
+          - "{{ qbittorrent_identifier }}.service"
+      register: qbittorrent_quiesce_job_result
+      changed_when: false
+      failed_when: false
+
+    - name: Query qBittorrent systemd process identities after quiescing
+      ansible.builtin.command:
+        argv:
+          - "{{ qbittorrent_systemd_systemctl_command }}"
+          - show
+          - --property=MainPID
+          - --property=ControlPID
+          - --value
+          - "{{ qbittorrent_identifier }}.service"
+      register: qbittorrent_quiesce_process_ids_result
+      changed_when: false
+      failed_when: false
+
+    - name: Require qBittorrent systemd isolation before Docker inspection
+      ansible.builtin.assert:
+        that:
+          - >-
+            qbittorrent_quiesce_final_unit_state_result.stdout
+            | trim
+            in ['inactive', 'failed', 'unknown']
+          - >-
+            qbittorrent_quiesce_job_result.rc == 0
+            and qbittorrent_quiesce_job_result.stdout
+            | trim
+            in ['', '0', '[0 /]']
+          - qbittorrent_quiesce_process_ids_result.rc == 0
+          - >-
+            qbittorrent_quiesce_process_ids_result.stdout_lines
+            | reject('equalto', '')
+            | difference(['0'])
+            | length
+            == 0
+        fail_msg: >-
+          qBittorrent could not be made inactive after installing an inert,
+          non-restarting runtime unit. Docker state has not been changed.
+
+    - name: Stop only the captured qBittorrent container ID
+      when:
+        - qbittorrent_quiesce_container_id | length > 0
+        - qbittorrent_quiesce_container_authorized | bool
+      ansible.builtin.command:
+        argv:
+          - "{{ devture_systemd_docker_base_host_command_docker }}"
+          - container
+          - stop
+          - --time
+          - "{{ qbittorrent_container_stop_grace_time_seconds | string }}"
+          - "{{ qbittorrent_quiesce_container_id }}"
+      register: qbittorrent_quiesce_container_stop_result
+      changed_when: qbittorrent_quiesce_container_stop_result.rc == 0
+      failed_when: false
+
+    - name: Remove only the captured qBittorrent container ID
+      when:
+        - qbittorrent_quiesce_container_id | length > 0
+        - qbittorrent_quiesce_container_authorized | bool
+      ansible.builtin.command:
+        argv:
+          - "{{ devture_systemd_docker_base_host_command_docker }}"
+          - container
+          - rm
+          - --force
+          - "{{ qbittorrent_quiesce_container_id }}"
+      register: qbittorrent_quiesce_container_removal_result
+      changed_when: qbittorrent_quiesce_container_removal_result.rc == 0
+      failed_when: false
+
+    - name: Prove no exact-name qBittorrent container remains
+      ansible.builtin.command:
+        argv:
+          - "{{ devture_systemd_docker_base_host_command_docker }}"
+          - container
+          - ls
+          - --all
+          - --no-trunc
+          - --filter
+          - "name=^/{{ qbittorrent_identifier | replace('.', '[.]') }}$"
+          - "--format={{ '{{' }}.ID{{ '}}' }}"
+      register: qbittorrent_quiesce_running_name_query_result
+      changed_when: false
+      failed_when: false
+
+    - name: Prove the captured qBittorrent ID is absent
+      when: qbittorrent_quiesce_container_id | length > 0
+      ansible.builtin.command:
+        argv:
+          - "{{ devture_systemd_docker_base_host_command_docker }}"
+          - container
+          - ls
+          - --all
+          - --no-trunc
+          - --filter
+          - "id={{ qbittorrent_quiesce_container_id }}"
+          - "--format={{ '{{' }}.ID{{ '}}' }}"
+      register: qbittorrent_quiesce_running_id_query_result
+      changed_when: false
+      failed_when: false
+
+    - name: Require qBittorrent network isolation after quiescing
+      ansible.builtin.assert:
+        that:
+          - qbittorrent_quiesce_running_name_query_result.rc == 0
+          - qbittorrent_quiesce_running_name_query_result.stdout | trim | length == 0
+          - >-
+            qbittorrent_quiesce_container_id | length == 0
+            or
+            (
+              qbittorrent_quiesce_running_id_query_result.rc == 0
+              and
+              qbittorrent_quiesce_running_id_query_result.stdout
+              | trim
+              | length
+              == 0
+            )
+        fail_msg: >-
+          qBittorrent is not proven absent at both its captured immutable ID
+          and stable name. The persistent quiesce is retained for recovery.
+
+    - name: Record successful qBittorrent quiescing
+      ansible.builtin.set_fact:
+        qbittorrent_quiesce_applied: true

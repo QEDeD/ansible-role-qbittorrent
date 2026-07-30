@@ -7,6 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 #}
 
 [Unit]
+# MASH-Role=qBittorrent
 Description=qBittorrent ({{ qbittorrent_identifier }})
 {% if qbittorrent_container_network_mode == 'container' %}
 # MASH-NetworkNamespaceOwner={{ qbittorrent_container_network_container }}
